@@ -53,5 +53,14 @@ DATASETS = {
             'gt_I': lambda x: x['otest']['knns'],
             'k': 30,
         }
+    },
+    'fiqa-dev': {
+        'task3': {
+            'url': 'https://huggingface.co/datasets/SISAP-Challenges/SISAP2026/resolve/refs%2Fpr%2F3/fiqa.h5',
+            'queries': lambda x: load_sparse_matrix(x['otest']['queries']),
+            'data': lambda x: load_sparse_matrix(x['train']),
+            'gt_I': lambda x: x['otest']['knns'],
+            'k': 30,            
+        }
     }
 }

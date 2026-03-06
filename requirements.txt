@@ -3,4 +3,4 @@ scipy
 h5py
 tqdm
 faiss-cpu
-torch
+

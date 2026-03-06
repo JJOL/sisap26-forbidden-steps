@@ -18,7 +18,7 @@ if __name__ == "__main__":
         help='input csv')
     parser.add_argument(
         '--task',
-        choices=['task1', 'task2'],
+        choices=['task1', 'task2', 'task3'],
         default='task2'
     )
 

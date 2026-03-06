@@ -42,15 +42,12 @@ jobs:
       - name: Install dependencies
         shell: bash -el {0}
         run: |
-          conda create -n faiss python=3.10
-          conda activate faiss
-          conda install -c pytorch faiss-cpu
-          conda install matplotlib
-          pip install h5py
+          bash install.sh
+          source venv/bin/activate
       - name: Run benchmark
         shell: bash -el {0}
         run: |
-          conda activate faiss
+          source venv/bin/activate
           python3 search.py --task task2
           python3 eval.py res.csv
           python3 plot.py --task task2 res.csv
