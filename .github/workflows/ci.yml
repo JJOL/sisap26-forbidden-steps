@@ -44,16 +44,25 @@ jobs:
         run: |
           bash install.sh
           source venv/bin/activate
-      - name: Run benchmark
+      - name: Run Task 2
         shell: bash -el {0}
         run: |
           source venv/bin/activate
           python3 search.py --task task2
           python3 eval.py res.csv
           python3 plot.py --task task2 res.csv
+      - name: Run Task 3
+        shell: bash -el {0}
+        run: |
+          source venv/bin/activate
+          python3 search.py --task task3 --dataset fiqa-dev
+          python3 eval.py res_task3.csv
+          python3 plot.py --task task3 res_task3.csv
       - uses: actions/upload-artifact@v4
         with:
           name: Results
           path: | 
             res.csv
+            res_task3.csv
             result_task2.png
+            result_task3.png

@@ -36,6 +36,14 @@ def get_query_count(dataset, task):
     return qn
 
 DATASETS = {
+    'wikipedia-small': {
+        'task1': {
+            'url': 'https://huggingface.co/datasets/SISAP-Challenges/SISAP2026/resolve/main/benchmark-dev-wikipedia-bge-m3-small.h5',
+            'data': lambda x: x['train'],
+            'gt_I': lambda x: x['allknn']['knns'],
+            'k': 15,
+        }
+    },
     'llama-dev': {
         'task2' : {
             'url': 'https://huggingface.co/datasets/SISAP-Challenges/SISAP2026/resolve/main/llama-dev.h5',

@@ -22,6 +22,48 @@ def store_results(dst, algo, dataset, task, D, I, buildtime, querytime, params):
     f.create_dataset('dists', D.shape, dtype=D.dtype)[:] = D
     f.close()
 
+
+def run_task1(dataset, task, k):
+    print(f'Running {task} on {dataset}')
+
+    prepare(dataset, task)
+
+    fn = get_fn(dataset, task)
+    f = h5py.File(fn)
+    data = np.array(DATASETS[dataset][task]['data'](f), dtype=np.float32)
+    f.close()
+
+    n, d = data.shape
+    k = k + 1 # need to query for one more point to include self-loop 
+
+    nlist = 1024 # number of clusters/centroids to build the IVF from
+    index_identifier = f"IVF{nlist},SQfp16"
+
+    index = faiss.index_factory(d, index_identifier, faiss.METRIC_INNER_PRODUCT)
+
+    print(f"Training index on {data.shape} with {data.dtype}")
+    start = time.time()
+    index.train(data)
+    index.add(data)
+    elapsed_build = time.time() - start
+    print(f"Done training in {elapsed_build}s.")
+    assert index.is_trained
+
+    for nprobe in [1, 2, 5, 10, 100]:
+        print(f"Starting search on {data.shape} with nprobe={nprobe}")
+        start = time.time()
+        index.nprobe = nprobe
+        D, I = index.search(data, k)
+        elapsed_search = time.time() - start
+        print(f"Done searching in {elapsed_search}s.")
+
+        I = I + 1 # FAISS is 0-indexed, groundtruth is 1-indexed
+
+        identifier = f"index=({index_identifier}),query=(nprobe={nprobe})"
+
+        store_results(os.path.join("results/", dataset, task, f"{identifier}.h5"), "faissIVF", 
+                      dataset, task, D, I, elapsed_build, elapsed_search, identifier)
+
 def run_task2(dataset, task, k):
     print(f'Running {task} on {dataset}')
 
@@ -34,15 +76,13 @@ def run_task2(dataset, task, k):
     f.close()
 
     n, d = data.shape
-    if task == 'task2':
-        k = k + 1 # need to search for one more NN since we cannot remove self-loop
 
     nlist = 1024 # number of clusters/centroids to build the IVF from
     index_identifier = f"IVF{nlist},SQfp16"
 
     index = faiss.index_factory(d, index_identifier, faiss.METRIC_INNER_PRODUCT)
 
-    print(f"Training index on {data.shape}")
+    print(f"Training index on {data.shape} with {data.dtype}")
     start = time.time()
     index.train(data)
     index.add(data)
@@ -81,10 +121,7 @@ def run_task3(dataset, task, k):
 
     n_queries = queries.shape[0]
 
-    # Convert corpus to PyTorch sparse CSR tensor
-    # Ensure available device
     device = torch.device("cpu")
-    print(f"Using device: {device}")
 
     # Prepare corpus on device
     # Scipy CSR uses int32 usually, but PyTorch wants int64 for indices
@@ -96,7 +133,6 @@ def run_task3(dataset, task, k):
         indptr, indices, data, size=corpus.shape, device=device
     )
     
-
     I = np.zeros((n_queries, k), dtype=np.int32)
     D = np.zeros((n_queries, k), dtype=np.float32)
 
@@ -151,10 +187,16 @@ if __name__ == "__main__":
         default='llama-dev'
     )
 
-
     args = parser.parse_args()
-    if args.task == 'task3':
-        run_task3(args.dataset, args.task, DATASETS[args.dataset][args.task]['k'])
-    else:
+    if args.task not in DATASETS[args.dataset]:
+        print(f"Task '{args.task}' incompatible with dataset '{args.dataset}'")
+        exit(1)    
+
+    if args.task == 'task1':
+        run_task1(args.dataset, args.task, DATASETS[args.dataset][args.task]['k'])
+    elif args.task == 'task2':
         run_task2(args.dataset, args.task, DATASETS[args.dataset][args.task]['k'])
+    elif args.task == 'task3':
+        run_task3(args.dataset, args.task, DATASETS[args.dataset][args.task]['k'])
+
 
