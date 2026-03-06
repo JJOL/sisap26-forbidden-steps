@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import time
 from tqdm import tqdm
-from scipy.sparse import csr_matrix
+import torch
 from datasets import DATASETS, prepare, get_fn
 
 def store_results(dst, algo, dataset, task, D, I, buildtime, querytime, params):
@@ -81,26 +81,58 @@ def run_task3(dataset, task, k):
 
     n_queries = queries.shape[0]
 
+    # Convert corpus to PyTorch sparse CSR tensor
+    # Ensure available device
+    device = torch.device("cpu")
+    print(f"Using device: {device}")
+
+    # Prepare corpus on device
+    # Scipy CSR uses int32 usually, but PyTorch wants int64 for indices
+    indptr = torch.from_numpy(corpus.indptr.astype(np.int64)).to(device)
+    indices = torch.from_numpy(corpus.indices.astype(np.int64)).to(device)
+    data = torch.from_numpy(corpus.data.astype(np.float32)).to(device)
+    
+    corpus_torch = torch.sparse_csr_tensor(
+        indptr, indices, data, size=corpus.shape, device=device
+    )
+    
+
     I = np.zeros((n_queries, k), dtype=np.int32)
     D = np.zeros((n_queries, k), dtype=np.float32)
 
+    batch_size = 100
+    
     start_time = time.time()
-    print(f"Extracting top-{k} neighbors...")
-    # Using scipy sparse exact search query by query
-    for i in tqdm(range(n_queries), desc="Processing Queries"):
-        q_dense = queries[i].toarray().flatten()
-        row_scores = corpus.dot(q_dense)
+    print(f"Extracting top-{k} neighbors with PyTorch sparse mm...")
+    
+    # Process in batches
+    for i in tqdm(range(0, n_queries, batch_size), desc="Processing Batches"):
+        end_idx = min(i + batch_size, n_queries)
         
-        top_k_idx = np.argpartition(-row_scores, k)[:k]
-        top_k_sorted_idx = top_k_idx[np.argsort(-row_scores[top_k_idx])]
+        # Get query batch (scipy sparse matrix)
+        q_batch_scipy = queries[i:end_idx]
         
-        I[i] = top_k_sorted_idx + 1  # 1-based indexing for GT matches
-        D[i] = row_scores[top_k_sorted_idx]
-            
+        # Convert to dense PyTorch tensor on device
+        # Note: toarray() creates a dense numpy array
+        q_batch_dense = torch.from_numpy(q_batch_scipy.toarray().astype(np.float32)).to(device)
+        
+        # Matrix multiplication: 
+        # corpus (N_docs, N_feat) @ q_batch.T (N_feat, batch_size) -> scores (N_docs, batch_size)
+        scores = torch.mm(corpus_torch, q_batch_dense.T)
+        
+        # Get top-k along dim 0 (for each query in the batch)
+        # values, indices shapes: (k, batch_size)
+        top_val, top_idx = torch.topk(scores, k, dim=0)
+        
+        # Transpose to (batch_size, k) and move to CPU/numpy
+        # Add 1 to indices for 1-based groundtruth
+        I[i:end_idx] = top_idx.t().cpu().numpy() + 1
+        D[i:end_idx] = top_val.t().cpu().numpy()
+
     elapsed_search = time.time() - start_time
     print(f"Extraction completed in {elapsed_search:.2f} seconds.")
 
-    identifier = "scipy_exact"
+    identifier = "pytorch_sparse_mm"
     store_results(os.path.join("results/", dataset, task, f"{identifier}.h5"), identifier, 
                   dataset, task, D, I, 0.0, elapsed_search, identifier)
 
