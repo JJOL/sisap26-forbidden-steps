@@ -37,9 +37,7 @@ DATASETS = _discover_datasets()
 def get_fn(dataset, task):
     """Return the local path to the HDF5 file for a dataset/task."""
     cfg = DATASETS[dataset][task]
-    folder = cfg.get("_folder", cfg.get("dataset_name", dataset))
-    fn = cfg.get("local_fn", f"benchmark-dev-{dataset}.h5")
-    return os.path.join("data", folder, fn)
+    return os.path.join("data", cfg["_folder"], cfg["filename"])
 
 
 def get_gt_fn(dataset, task):
