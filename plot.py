@@ -68,36 +68,58 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--task",
-        choices=['task1', 'task2']
+        required=True,
+        choices=['task1', 'task2', 'task3'],
+        help="task type to plot",
+    )
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        help="dataset name to plot (e.g. gooaq-small); inferred from the CSV if only one dataset is present",
     )
     parser.add_argument("csvfile")
     args = parser.parse_args()
-    
+
     with open(args.csvfile, newline="") as csvfile:
         reader = csv.DictReader(csvfile)
         data = list(reader)
-    
+
+    if args.dataset is None:
+        datasets = {row["dataset"] for row in data if row["task"] == args.task}
+        if len(datasets) == 0:
+            print(f"No results found for task={args.task!r}")
+            raise SystemExit(1)
+        if len(datasets) > 1:
+            print(f"Multiple datasets found for task={args.task!r}: {sorted(datasets)}")
+            print("Please specify --dataset explicitly.")
+            raise SystemExit(1)
+        args.dataset = datasets.pop()
+        print(f"Inferred dataset: {args.dataset}")
+
     lines = {}
     for res in data:
-        if res["task"] != args.task:
+        if res["task"] != args.task or res["dataset"] != args.dataset:
             continue
-        dataset = res["dataset"]
         algo = res["algo"]
-        label = dataset + algo
-        if label not in lines:
-            lines[label] =  {
+        if algo not in lines:
+            lines[algo] = {
                 "xs": [],
                 "ys": [],
                 "ctrls": [],
-                "label": label,
+                "label": algo,
             }
-        lines[label]["xs"].append(float(res["recall"]))
-        lines[label]["ys"].append(get_query_count(dataset, args.task)/float(res["querytime"])) # FIX query size hardcoded
+        lines[algo]["xs"].append(float(res["recall"]))
+        lines[algo]["ys"].append(get_query_count(args.dataset, args.task) / float(res["querytime"]))
         try:
             run_identifier = res["params"].split("query=")[1]
-        except:
+        except IndexError:
             run_identifier = res["params"]
-        lines[label]["ctrls"].append(run_identifier)
-    
-    draw([get_pareto_frontier(line) for line in lines.values()], 
-            "Recall", "QPS (1/s)", "Result", f"result_{args.task}.png", True, 10, 8)
+        lines[algo]["ctrls"].append(run_identifier)
+
+    if not lines:
+        print(f"No results found for dataset={args.dataset!r} task={args.task!r}")
+        raise SystemExit(1)
+
+    draw([get_pareto_frontier(line) for line in lines.values()],
+         "Recall", "QPS (1/s)", f"{args.dataset} / {args.task}",
+         f"result_{args.dataset}_{args.task}.png", True, 10, 8)
