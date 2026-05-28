@@ -11,7 +11,7 @@ cd sisap26-python-baseline
 ```
 
 ### 2. Install Dependencies
-This repository requires Python 3.8+ and several dependencies. We provide a helper script for easy setup, or you can install manually.
+This repository requires Python 3.9+ and several dependencies. We provide a helper script for easy setup, or you can install manually.
 
 #### Option A: Quick Start (Linux/Mac)
 Use the provided install script to set up a virtual environment and install dependencies (including CPU-optimized PyTorch):
@@ -36,23 +36,10 @@ source venv/bin/activate
 Build and run using Docker:
 ```bash
 docker build -t sisap-baseline .
-docker run sisap-baseline --task task3 --dataset nq
 ```
 
 ## Running the Code
-Run the tasks on an example input using
-
-```bash
-python search.py --task {task1, task2, task3}
-```
-For task3 (approximate nearest neighbor search on sparse data), specifically:
-```bash
-python search.py --task task3 --dataset nq
-```
-
-It will automatically take care of downloading the necessary example dataset.
-
-
+The suggested approach is to run the the Docker container as detailed in `run_search.sh`.
 
 ### Evaluation
 
@@ -61,7 +48,7 @@ python eval.py results.csv
 ```
 will produce a summary file of the results with the computed recall against the ground truth data. 
 
-This csv file can be further processed to create plots (using `python plot.py --task {task1, task2}`) and show the fastest solutions above a certain recall threshold (using `python show_operating_points.py`).
+This csv file can be further processed to create plots (using `python plot.py --task {task1, task2, task3} res.csv`) and show the fastest solutions above a certain recall threshold (using `python show_operating_points.py`).
 
 ## How to take this to create my own system
 You can fork this repository and polish it to create your solution. Please also take care of the ci workflow (see below).
