@@ -1,11 +1,9 @@
 import argparse
 import h5py
 import numpy as np
-import os
 import csv
 import glob
-from pathlib import Path
-from datasets import DATASETS, get_fn, prepare
+from datasets import DATASETS, get_fn, prepare, get_h5_item
 
 def get_all_results(dirname):
     mask = [dirname + "/**/*.h5", dirname + "/**/*/*.h5"]
@@ -67,7 +65,11 @@ if __name__ == "__main__":
             fn = get_fn(dataset, task)
             print(f"Using groundtruth in {fn}")
             f = h5py.File(fn)
-            gt_I = np.array(DATASETS[dataset][task]['gt_I'](f))
+            gt_I = np.array(get_h5_item(f, DATASETS[dataset][task]['gt_I']))
+            # Task 2 ground-truth uses 0-based indices; shift to 1-based to
+            # match the 1-based IDs required in result files by the spec.
+            if task == "task2":
+                gt_I = gt_I + 1
             f.close()
             recall = get_recall(np.array(res["knns"]), gt_I, DATASETS[dataset][task]['k'])
             d['recall'] = recall
