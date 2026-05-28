@@ -2,67 +2,63 @@ name: CI
 
 on:
   push:
-    # Sequence of patterns matched against refs/heads
-    branches:    
-      # Push events on main branch
+    branches:
       - main
       - master
-    # Sequence of patterns matched against refs/tags
     tags: '*'
 
 jobs:
   test:
-    name: ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        version:
-          - '1.8'
-        os:
-          - ubuntu-latest
-        arch:
-          - x64
-        exclude:
-          - os: macOS-latest
-            arch: x86
-        python-version: ["3.10"]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: 'true'
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t sisap-baseline .
+
+      - name: Run search (all tasks)
+        run: |
+          mkdir -p results/task-1-spot-check results/task-2-spot-check results/task-3-spot-check
+          for task in 1 2 3; do
+            echo "=== Task $task ==="
+            docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              --volume $(pwd)/search.py:/app/search.py:ro \
+              --volume $(pwd)/data:/app/data:ro \
+              --volume $(pwd)/results:/app/results:rw \
+              sisap-baseline \
+              --input data/task-$task-spot-check/*.h5 \
+              --task-description data/task-$task-spot-check/config.json \
+              --output results/task-$task-spot-check/
+          done
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - uses: conda-incubator/setup-miniconda@v2
-        with:
-          auto-update-conda: true
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.10'
+
       - name: Install dependencies
-        shell: bash -el {0}
+        run: pip install -r requirements.txt
+
+      - name: Evaluate and plot results
         run: |
-          bash install.sh
-          source venv/bin/activate
-      - name: Run Task 2
-        shell: bash -el {0}
-        run: |
-          source venv/bin/activate
-          python3 search.py --task task2
-          python3 eval.py res.csv
-          python3 plot.py --task task2 res.csv
-      - name: Run Task 3
-        shell: bash -el {0}
-        run: |
-          source venv/bin/activate
-          python3 search.py --task task3 --dataset fiqa-dev
-          python3 eval.py res_task3.csv
-          python3 plot.py --task task3 res_task3.csv
+          for task in 1 2 3; do
+            cfg=data/task-$task-spot-check/config.json
+            h5=$(echo data/task-$task-spot-check/*.h5)
+            dataset=$(python -c "import json; print(json.load(open('$cfg'))['dataset_name'])")
+            echo "=== Evaluating task$task / $dataset ==="
+            python eval.py \
+              --results results/task-$task-spot-check/ \
+              --input $h5 \
+              --task-description $cfg \
+              res_task${task}.csv
+            python plot.py --task task$task --dataset $dataset res_task${task}.csv
+            python show_operating_points.py --task task$task --dataset $dataset res_task${task}.csv
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: Results
-          path: | 
-            res.csv
-            res_task3.csv
-            result_task2.png
-            result_task3.png
+          path: |
+            res_task*.csv
+            result_*.png
