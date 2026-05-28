@@ -44,14 +44,9 @@ jobs:
         run: |
           for task in 1 2 3; do
             cfg=data/task-$task-spot-check/config.json
-            h5=$(echo data/task-$task-spot-check/*.h5)
             dataset=$(python -c "import json; print(json.load(open('$cfg'))['dataset_name'])")
             echo "=== Evaluating task$task / $dataset ==="
-            python eval.py \
-              --results results/task-$task-spot-check/ \
-              --input $h5 \
-              --task-description $cfg \
-              res_task${task}.csv
+            python eval.py --results results/task-$task-spot-check/ res_task${task}.csv
             python plot.py --task task$task --dataset $dataset res_task${task}.csv
             python show_operating_points.py --task task$task --dataset $dataset res_task${task}.csv
           done
