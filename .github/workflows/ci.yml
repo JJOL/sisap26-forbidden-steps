@@ -27,6 +27,7 @@ jobs:
               --volume $(pwd)/data:/app/data:ro \
               --volume $(pwd)/results:/app/results:rw \
               sisap-baseline \
+              python search.py \
               --input data/task-$task-spot-check/*.h5 \
               --task-description data/task-$task-spot-check/config.json \
               --output results/task-$task-spot-check/
