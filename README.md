@@ -77,4 +77,67 @@ You can fork this repository and polish it to create your solution. Please also 
 You can monitor your runnings in the "Actions" tab of the GitHub panel: for instance, you can see some runs of this repository:
 <https://github.com/sisap-challenges/sisap26-python-baseline/actions>
 
- 
+## Submission to TIRA
+
+### Step 1: Verify your submission locally
+
+Install the TIRA CLI:
+
+```bash
+pip3 install --upgrade tira
+```
+
+Then do a dry run to verify your approach works locally (use `task-2-spot-check-20260528-training` or `task-3-spot-check-20260528-training` if your approach only targets task 2 or task 3, respectively):
+
+```bash
+tira-cli code-submission \
+    --path . \
+    --command '/app/search.py --input $inputDataset/*.h5 --task-description $inputDataset/config.json --output $outputDir' \
+    --task sisap-2026 \
+    --dataset task-1-spot-check-20260528-training \
+    --dry-run
+```
+
+### Step 2: Create an account and register your team
+
+1. Go to <https://www.tira.io/> and sign up (or log in via GitHub).
+2. Navigate to the SISAP 2026 Indexing Challenge at <https://www.tira.io/task-overview/sisap-2026> and click **Register**.
+3. Optional: add team members via <https://www.tira.io/g?type=my>.
+
+### Step 3: Authenticate and submit
+
+Obtain your authentication token:
+
+- Navigate to <https://www.tira.io/task-overview/sisap-2026>
+- Click **submit** => **Code Submissions** => **New Submission** => **I want to submit from my local machine**
+
+Then authenticate:
+
+```bash
+tira-cli login --token AUTH-TOKEN
+```
+
+Verify the setup:
+
+```bash
+tira-cli verify-installation --task sisap-2026 --team YOUR-TEAM
+```
+
+Submit by re-running the command from Step 1 without `--dry-run`:
+
+```bash
+tira-cli code-submission \
+    --path . \
+    --command '/app/search.py --input $inputDataset/*.h5 --task-description $inputDataset/config.json --output $outputDir' \
+    --task sisap-2026 \
+    --dataset task-1-spot-check-20260528-training
+```
+
+### Step 4: Run your submission in the TIRA UI
+
+- Navigate to <https://www.tira.io/task-overview/sisap-2026>
+- Click **submit** => **Code Submissions**, select your submission
+- Choose a dataset and the resources on which it should run
+
+It is sufficient to run your submission on a few datasets; the organizers will script execution on all datasets once everything looks correct.
+
