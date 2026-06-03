@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # download_datasets.sh
 #
-# Downloads all SISAP 2026 benchmark datasets from HuggingFace and writes the
-# accompanying config.json files that datasets.py / search.py expect.
+# Downloads all SISAP 2026 benchmark datasets from HuggingFace.
 #
 # Usage:
 #   ./download_datasets.sh [--small-only]
@@ -18,44 +17,44 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Check for hf CLI
 # ---------------------------------------------------------------------------
 
-HF_BASE="https://huggingface.co/datasets/SISAP-Challenges/SISAP2026/resolve/main"
+if ! command -v hf &>/dev/null; then
+    echo "Error: hf command not found."
+    echo "Please install it with: pip install -U huggingface_hub[cli]"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
 
 SMALL_ONLY=false
 for arg in "$@"; do
     [[ "$arg" == "--small-only" ]] && SMALL_ONLY=true
 done
 
-download() {
-    local url="$1"
-    local dest="$2"
-    if [[ -f "$dest" ]]; then
-        echo "  already present: $dest"
-        return
-    fi
-    mkdir -p "$(dirname "$dest")"
-    echo "  downloading $(basename "$dest") ..."
-    # Use wget if available, fall back to curl
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress -O "$dest" "$url"
-    else
-        curl -L --progress-bar -o "$dest" "$url"
-    fi
-    echo "  done: $dest"
-}
+REPO="SISAP-Challenges/SISAP2026"
 
-write_config() {
-    local path="$1"
-    local content="$2"
-    mkdir -p "$(dirname "$path")"
-    if [[ -f "$path" ]]; then
-        echo "  config exists: $path"
-    else
-        printf '%s\n' "$content" > "$path"
-        echo "  wrote:  $path"
-    fi
+# ---------------------------------------------------------------------------
+# Helper function to download a dataset directory
+# ---------------------------------------------------------------------------
+
+download_dataset() {
+    local dataset_dir="$1"
+    local dataset_name="$2"
+    
+    echo ""
+    echo "-- $dataset_name --"
+    
+    # Download the entire directory using hf
+    hf download "$REPO" \
+        --repo-type dataset \
+        --include "$dataset_dir/*" \
+        --local-dir data
+    
+    echo "  done: data/$dataset_dir/"
 }
 
 # ---------------------------------------------------------------------------
@@ -65,44 +64,16 @@ write_config() {
 echo ""
 echo "=== Task 1: K-nearest neighbor graph ==="
 
-# --- wikipedia-small (development dataset, ~682 MB) ---
-echo ""
-echo "-- wikipedia-small (682 MB) --"
-download \
-    "$HF_BASE/benchmark-dev-wikipedia-bge-m3-small.h5" \
-    "data/wikipedia-small/benchmark-dev-wikipedia-bge-m3-small.h5"
+download_dataset "wikipedia-small" "wikipedia-small (682 MB)"
 
-write_config "data/wikipedia-small/config.json" \
-'{
-    "task": "task1",
-    "data": "train",
-    "gt_I": ["allknn", "knns"],
-    "k": 15,
-    "dataset_name": "wikipedia-small",
-    "filename": "benchmark-dev-wikipedia-bge-m3-small.h5"
-}'
-
-# --- wikipedia (full evaluation dataset, ~15 GB) ---
 if [[ "$SMALL_ONLY" == false ]]; then
-    echo ""
-    echo "-- wikipedia (full, ~15 GB) --"
-    download \
-        "$HF_BASE/benchmark-dev-wikipedia-bge-m3.h5" \
-        "data/wikipedia/benchmark-dev-wikipedia-bge-m3.h5"
-
-    write_config "data/wikipedia/config.json" \
-'{
-    "task": "task1",
-    "data": "train",
-    "gt_I": ["allknn", "knns"],
-    "k": 15,
-    "dataset_name": "wikipedia",
-    "filename": "benchmark-dev-wikipedia-bge-m3.h5"
-}'
+    download_dataset "wikipedia" "wikipedia (full, ~15 GB)"
 else
     echo ""
     echo "-- wikipedia (full) skipped (--small-only) --"
 fi
+
+download_dataset "task-1-spot-check" "task-1-spot-check (validation dataset)"
 
 # ---------------------------------------------------------------------------
 # Task 2 – Maximum Inner Product Search  (k=30, dot product, not normalized)
@@ -111,23 +82,9 @@ fi
 echo ""
 echo "=== Task 2: Maximum Inner Product Search ==="
 
-# --- llama-dev (development + evaluation dataset, ~134 MB) ---
-echo ""
-echo "-- llama-dev (134 MB) --"
-download \
-    "$HF_BASE/llama-dev.h5" \
-    "data/llama-dev/llama-dev.h5"
+download_dataset "llama-dev" "llama-dev (134 MB)"
 
-write_config "data/llama-dev/config.json" \
-'{
-    "task": "task2",
-    "data": "train",
-    "queries": "test/queries",
-    "gt_I": "test/knns",
-    "k": 30,
-    "dataset_name": "llama-dev",
-    "filename": "llama-dev.h5"
-}'
+download_dataset "task-2-spot-check" "task-2-spot-check (validation dataset)"
 
 # ---------------------------------------------------------------------------
 # Task 3 – Sparse high-dimensional vectors  (k=30, dot product, SPLADE-v3)
@@ -136,48 +93,16 @@ write_config "data/llama-dev/config.json" \
 echo ""
 echo "=== Task 3: Sparse vector search ==="
 
-# --- fiqa-dev (small development dataset, ~188 MB) ---
-echo ""
-echo "-- fiqa-dev (188 MB) --"
-download \
-    "$HF_BASE/fiqa-dev.h5" \
-    "data/fiqa-dev/fiqa-dev.h5"
+download_dataset "fiqa-dev" "fiqa-dev (188 MB)"
 
-write_config "data/fiqa-dev/config.json" \
-'{
-    "task": "task3",
-    "data": "train",
-    "queries": "otest/queries",
-    "gt_I": "otest/knns",
-    "k": 30,
-    "dataset_name": "fiqa-dev",
-    "sparse": true,
-    "filename": "fiqa-dev.h5"
-}'
-
-# --- nq (full evaluation dataset, ~6.9 GB) ---
 if [[ "$SMALL_ONLY" == false ]]; then
-    echo ""
-    echo "-- nq (full, ~6.9 GB) --"
-    download \
-        "$HF_BASE/nq.h5" \
-        "data/nq/nq.h5"
-
-    write_config "data/nq/config.json" \
-'{
-    "task": "task3",
-    "data": "train",
-    "queries": "otest/queries",
-    "gt_I": "otest/knns",
-    "k": 30,
-    "dataset_name": "nq",
-    "sparse": true,
-    "filename": "nq.h5"
-}'
+    download_dataset "nq" "nq (full, ~6.9 GB)"
 else
     echo ""
     echo "-- nq (full) skipped (--small-only) --"
 fi
+
+download_dataset "task-3-spot-check" "task-3-spot-check (validation dataset)"
 
 # ---------------------------------------------------------------------------
 # Done
@@ -187,19 +112,24 @@ echo ""
 echo "All done. Datasets available:"
 echo ""
 echo "  Task 1 (all-kNN graph, k=15):"
-echo "    wikipedia-small   data/wikipedia-small/benchmark-dev-wikipedia-bge-m3-small.h5"
+echo "    wikipedia-small   data/wikipedia-small/"
 if [[ "$SMALL_ONLY" == false ]]; then
-echo "    wikipedia         data/wikipedia/benchmark-dev-wikipedia-bge-m3.h5"
+echo "    wikipedia         data/wikipedia/"
 fi
 echo ""
 echo "  Task 2 (MIPS, k=30):"
-echo "    llama-dev         data/llama-dev/llama-dev.h5"
+echo "    llama-dev         data/llama-dev/"
 echo ""
 echo "  Task 3 (sparse search, k=30):"
-echo "    fiqa-dev          data/fiqa-dev/fiqa-dev.h5"
+echo "    fiqa-dev          data/fiqa-dev/"
 if [[ "$SMALL_ONLY" == false ]]; then
-echo "    nq                data/nq/nq.h5"
+echo "    nq                data/nq/"
 fi
+echo ""
+echo "  Spot-check (validation datasets):"
+echo "    task-1-spot-check data/task-1-spot-check/"
+echo "    task-2-spot-check data/task-2-spot-check/"
+echo "    task-3-spot-check data/task-3-spot-check/"
 echo ""
 echo "Run search.py with any of these dataset names, e.g.:"
 echo "  python search.py --task task1 --dataset wikipedia-small"
