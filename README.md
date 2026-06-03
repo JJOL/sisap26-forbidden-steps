@@ -38,6 +38,10 @@ Build and run using Docker:
 docker build -t sisap-baseline .
 ```
 
+## Downloading datasets
+
+Run `./download_datasets.sh` to download all datasets. You can provide `--small-only` to avoid downloading the full `wikipedia` and `nq` dataset.
+
 ## Running the Code
 The suggested approach is to run the the Docker container as detailed in `run_search.sh`.
 
