@@ -61,30 +61,30 @@ download_dataset() {
 # Task 1 – K-nearest neighbor graph  (k=15, dot product, normalized vectors)
 # ---------------------------------------------------------------------------
 
-echo ""
-echo "=== Task 1: K-nearest neighbor graph ==="
+# echo ""
+# echo "=== Task 1: K-nearest neighbor graph ==="
 
-download_dataset "wikipedia-small" "wikipedia-small (682 MB)"
+# download_dataset "wikipedia-small" "wikipedia-small (682 MB)"
 
-if [[ "$SMALL_ONLY" == false ]]; then
-    download_dataset "wikipedia" "wikipedia (full, ~15 GB)"
-else
-    echo ""
-    echo "-- wikipedia (full) skipped (--small-only) --"
-fi
+# if [[ "$SMALL_ONLY" == false ]]; then
+#     download_dataset "wikipedia" "wikipedia (full, ~15 GB)"
+# else
+#     echo ""
+#     echo "-- wikipedia (full) skipped (--small-only) --"
+# fi
 
-download_dataset "task-1-spot-check" "task-1-spot-check (validation dataset)"
+# download_dataset "task-1-spot-check" "task-1-spot-check (validation dataset)"
 
 # ---------------------------------------------------------------------------
 # Task 2 – Maximum Inner Product Search  (k=30, dot product, not normalized)
 # ---------------------------------------------------------------------------
 
-echo ""
-echo "=== Task 2: Maximum Inner Product Search ==="
+# echo ""
+# echo "=== Task 2: Maximum Inner Product Search ==="
 
-download_dataset "llama-dev" "llama-dev (134 MB)"
+# download_dataset "llama-dev" "llama-dev (134 MB)"
 
-download_dataset "task-2-spot-check" "task-2-spot-check (validation dataset)"
+# download_dataset "task-2-spot-check" "task-2-spot-check (validation dataset)"
 
 # ---------------------------------------------------------------------------
 # Task 3 – Sparse high-dimensional vectors  (k=30, dot product, SPLADE-v3)
