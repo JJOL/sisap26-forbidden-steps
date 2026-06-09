@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -34,6 +35,7 @@ struct CsrMatrix {
 
 struct RetrievalResult {
 	std::vector<std::vector<int>> topIndicesByQuery;
+	std::vector<std::vector<float>> topScoresByQuery;
 	long long prepElapsedMs = 0;
 	long long elapsedMs = 0;
 	long long totalPostingsVisited = 0;
@@ -166,6 +168,40 @@ std::vector<int> topKIndicesQuickselect(const std::vector<float>& scores, std::s
 	return topIndices;
 }
 
+std::vector<ScoreDoc> topKScoredQuickselect(const std::vector<float>& scores, std::size_t k) {
+	std::vector<ScoreDoc> scored;
+	scored.reserve(scores.size());
+	for (std::size_t i = 0; i < scores.size(); ++i) {
+		scored.emplace_back(scores[i], static_cast<int>(i));
+	}
+
+	k = std::min(k, scored.size());
+	if (k == 0) {
+		return {};
+	}
+
+	if (k < scored.size()) {
+		std::nth_element(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k), scored.end(),
+					 [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
+						 if (lhs.first == rhs.first) {
+							 return lhs.second < rhs.second;
+						 }
+						 return lhs.first > rhs.first;
+					 });
+	}
+
+	std::sort(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k),
+		  [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
+			  if (lhs.first == rhs.first) {
+				  return lhs.second < rhs.second;
+			  }
+			  return lhs.first > rhs.first;
+		  });
+
+	scored.resize(k);
+	return scored;
+}
+
 std::vector<int> topKFromScoredDocsQuickselect(const std::vector<int>& touchedDocs,
 								const std::vector<float>& scores,
 								std::size_t k) {
@@ -198,6 +234,42 @@ std::vector<int> topKFromScoredDocsQuickselect(const std::vector<int>& touchedDo
 		topIndices.push_back(scored[i].second);
 	}
 	return topIndices;
+}
+
+std::vector<ScoreDoc> topKScoredFromTouchedDocsQuickselect(const std::vector<int>& touchedDocs,
+									   const std::vector<float>& scores,
+									   std::size_t k) {
+	std::vector<ScoreDoc> scored;
+	scored.reserve(touchedDocs.size());
+	for (int docId : touchedDocs) {
+		scored.emplace_back(scores[static_cast<std::size_t>(docId)], docId);
+	}
+
+	k = std::min(k, scored.size());
+	if (k == 0) {
+		return {};
+	}
+
+	if (k < scored.size()) {
+		std::nth_element(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k), scored.end(),
+					 [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
+						 if (lhs.first == rhs.first) {
+							 return lhs.second < rhs.second;
+						 }
+						 return lhs.first > rhs.first;
+					 });
+	}
+
+	std::sort(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k),
+		  [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
+			  if (lhs.first == rhs.first) {
+				  return lhs.second < rhs.second;
+			  }
+			  return lhs.first > rhs.first;
+		  });
+
+	scored.resize(k);
+	return scored;
 }
 
 InvertedIndex buildInvertedIndex(const CsrMatrix& db) {
@@ -299,13 +371,22 @@ RetrievalResult runBruteForceRetrieval(const CsrMatrix& db, const CsrMatrix& que
 
 	RetrievalResult result;
 	result.topIndicesByQuery.resize(static_cast<std::size_t>(queries.rows));
+	result.topScoresByQuery.resize(static_cast<std::size_t>(queries.rows));
 
 	std::vector<float> scores(static_cast<std::size_t>(db.rows), 0.0F);
 	for (long long q = 0; q < queries.rows; ++q) {
 		for (long long d = 0; d < db.rows; ++d) {
 			scores[static_cast<std::size_t>(d)] = dotProductRows(db, d, queries, q);
 		}
-		result.topIndicesByQuery[static_cast<std::size_t>(q)] = topKIndicesQuickselect(scores, kTop);
+		const std::vector<ScoreDoc> top = topKScoredQuickselect(scores, kTop);
+		auto& topIndices = result.topIndicesByQuery[static_cast<std::size_t>(q)];
+		auto& topScores = result.topScoresByQuery[static_cast<std::size_t>(q)];
+		topIndices.reserve(top.size());
+		topScores.reserve(top.size());
+		for (const ScoreDoc& item : top) {
+			topScores.push_back(item.first);
+			topIndices.push_back(item.second);
+		}
 
 		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
 			std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
@@ -319,6 +400,7 @@ RetrievalResult runBruteForceRetrieval(const CsrMatrix& db, const CsrMatrix& que
 RetrievalResult runInvertedIndexRetrieval(const CsrMatrix& db, const CsrMatrix& queries, std::size_t kTop) {
 	RetrievalResult result;
 	result.topIndicesByQuery.resize(static_cast<std::size_t>(queries.rows));
+	result.topScoresByQuery.resize(static_cast<std::size_t>(queries.rows));
 	result.queryCount = queries.rows;
 
 	Clock prepClock;
@@ -373,7 +455,15 @@ RetrievalResult runInvertedIndexRetrieval(const CsrMatrix& db, const CsrMatrix& 
 			// 		     touchedDocs);
 		}
 
-		result.topIndicesByQuery[static_cast<std::size_t>(q)] = topKFromScoredDocsQuickselect(touchedDocs, scores, kTop);
+		const std::vector<ScoreDoc> top = topKScoredFromTouchedDocsQuickselect(touchedDocs, scores, kTop);
+		auto& topIndices = result.topIndicesByQuery[static_cast<std::size_t>(q)];
+		auto& topScores = result.topScoresByQuery[static_cast<std::size_t>(q)];
+		topIndices.reserve(top.size());
+		topScores.reserve(top.size());
+		for (const ScoreDoc& item : top) {
+			topScores.push_back(item.first);
+			topIndices.push_back(item.second);
+		}
 		result.totalPostingsVisited += postingsVisitedForQuery;
 		result.totalTouchedDocs += static_cast<long long>(touchedDocs.size());
 		result.maxTouchedDocs = std::max(result.maxTouchedDocs, static_cast<long long>(touchedDocs.size()));
@@ -699,6 +789,7 @@ RetrievalResult runHnswRetrieval(const CsrMatrix& db,
 
 	RetrievalResult result;
 	result.topIndicesByQuery.resize(static_cast<std::size_t>(queries.rows));
+	result.topScoresByQuery.resize(static_cast<std::size_t>(queries.rows));
 	result.queryCount = queries.rows;
 
 	Clock prepClock;
@@ -741,11 +832,15 @@ RetrievalResult runHnswRetrieval(const CsrMatrix& db,
 		++stamp;
 
 		std::vector<int> top;
+		std::vector<float> topScores;
 		top.reserve(kTop);
+		topScores.reserve(kTop);
 		for (std::size_t i = 0; i < candidates.size() && i < kTop; ++i) {
 			top.push_back(candidates[i].second);
+			topScores.push_back(candidates[i].first);
 		}
 		result.topIndicesByQuery[static_cast<std::size_t>(q)] = std::move(top);
+		result.topScoresByQuery[static_cast<std::size_t>(q)] = std::move(topScores);
 
 		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
 			std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
@@ -828,15 +923,123 @@ CsrMatrix loadSparseMatrix(const H5::Group& group) {
 	return mat;
 }
 
+bool isIntegerString(const std::string& value) {
+	if (value.empty()) {
+		return false;
+	}
+	std::size_t start = 0;
+	if (value[0] == '+' || value[0] == '-') {
+		start = 1;
+	}
+	if (start >= value.size()) {
+		return false;
+	}
+	for (std::size_t i = start; i < value.size(); ++i) {
+		if (value[i] < '0' || value[i] > '9') {
+			return false;
+		}
+	}
+	return true;
+}
+
+void writeStringAttribute(H5::H5File& file, const std::string& name, const std::string& value) {
+	const H5::StrType strType(H5::PredType::C_S1, H5T_VARIABLE);
+	const H5::DataSpace scalarSpace(H5S_SCALAR);
+	H5::Attribute attr = file.createAttribute(name, strType, scalarSpace);
+	attr.write(strType, value);
+}
+
+void writeDoubleAttribute(H5::H5File& file, const std::string& name, double value) {
+	const H5::DataSpace scalarSpace(H5S_SCALAR);
+	H5::Attribute attr = file.createAttribute(name, H5::PredType::NATIVE_DOUBLE, scalarSpace);
+	attr.write(H5::PredType::NATIVE_DOUBLE, &value);
+}
+
+void storeResults(const std::string& dst,
+			  const std::string& algo,
+			  const std::string& dataset,
+			  const std::string& task,
+			  const RetrievalResult& retrieval,
+			  std::size_t kTop,
+			  double buildTimeSeconds,
+			  double queryTimeSeconds,
+			  const std::string& params) {
+	if (retrieval.topIndicesByQuery.size() != retrieval.topScoresByQuery.size()) {
+		throw std::runtime_error("Invalid retrieval result: index and score matrix sizes differ");
+	}
+
+	std::filesystem::path outPath(dst);
+	if (!outPath.parent_path().empty()) {
+		std::filesystem::create_directories(outPath.parent_path());
+	}
+
+	const std::size_t nQueries = retrieval.topIndicesByQuery.size();
+	std::vector<int> flatKnns(nQueries * kTop, 0);
+	std::vector<float> flatDists(nQueries * kTop, 0.0F);
+
+	for (std::size_t q = 0; q < nQueries; ++q) {
+		const auto& indices = retrieval.topIndicesByQuery[q];
+		const auto& dists = retrieval.topScoresByQuery[q];
+		const std::size_t available = std::min({kTop, indices.size(), dists.size()});
+		for (std::size_t i = 0; i < available; ++i) {
+			// Ground truth and baseline outputs are 1-based.
+			flatKnns[q * kTop + i] = indices[i] + 1;
+			flatDists[q * kTop + i] = dists[i];
+		}
+	}
+
+	H5::H5File file(dst, H5F_ACC_TRUNC);
+	writeStringAttribute(file, "algo", algo);
+	writeStringAttribute(file, "dataset", dataset);
+	writeStringAttribute(file, "task", task);
+	writeDoubleAttribute(file, "buildtime", buildTimeSeconds);
+	writeDoubleAttribute(file, "querytime", queryTimeSeconds);
+	writeStringAttribute(file, "params", params);
+
+	hsize_t dims[2] = {static_cast<hsize_t>(nQueries), static_cast<hsize_t>(kTop)};
+	H5::DataSpace matrixSpace(2, dims);
+
+	H5::DataSet knnsDs = file.createDataSet("knns", H5::PredType::NATIVE_INT, matrixSpace);
+	if (!flatKnns.empty()) {
+		knnsDs.write(flatKnns.data(), H5::PredType::NATIVE_INT);
+	}
+
+	H5::DataSet distsDs = file.createDataSet("dists", H5::PredType::NATIVE_FLOAT, matrixSpace);
+	if (!flatDists.empty()) {
+		distsDs.write(flatDists.data(), H5::PredType::NATIVE_FLOAT);
+	}
+}
+
 int main(int argc, char** argv) {
 	const std::string filePath = (argc > 1) ? argv[1] : "data/fiqa-dev/fiqa-dev.h5";
 	constexpr std::size_t kTop = 30;
 	const RetrievalStrategy strategy = (argc > 2) ? parseStrategy(argv[2]) : RetrievalStrategy::InvertedIndex;
+	std::string outputPath = "results/cpp_task3/index=(cpp_sparse),query=(default).h5";
+	std::string datasetName = "unknown";
+	std::string taskName = "task3";
 	HnswParams hnswParams;
+
 	if (strategy == RetrievalStrategy::Hnsw) {
-		hnswParams.M = (argc > 3) ? std::stoi(argv[3]) : 32;
-		hnswParams.efConstruction = (argc > 4) ? std::stoi(argv[4]) : 200;
-		hnswParams.efSearch = (argc > 5) ? std::stoi(argv[5]) : 120;
+		const bool oldStyleHnswArgs = (argc > 3) && isIntegerString(argv[3]);
+		if (oldStyleHnswArgs) {
+			hnswParams.M = (argc > 3) ? std::stoi(argv[3]) : 32;
+			hnswParams.efConstruction = (argc > 4) ? std::stoi(argv[4]) : 200;
+			hnswParams.efSearch = (argc > 5) ? std::stoi(argv[5]) : 120;
+			outputPath = (argc > 6) ? argv[6] : outputPath;
+			datasetName = (argc > 7) ? argv[7] : datasetName;
+			taskName = (argc > 8) ? argv[8] : taskName;
+		} else {
+			outputPath = (argc > 3) ? argv[3] : outputPath;
+			datasetName = (argc > 4) ? argv[4] : datasetName;
+			taskName = (argc > 5) ? argv[5] : taskName;
+			hnswParams.M = (argc > 6) ? std::stoi(argv[6]) : 32;
+			hnswParams.efConstruction = (argc > 7) ? std::stoi(argv[7]) : 200;
+			hnswParams.efSearch = (argc > 8) ? std::stoi(argv[8]) : 120;
+		}
+	} else {
+		outputPath = (argc > 3) ? argv[3] : outputPath;
+		datasetName = (argc > 4) ? argv[4] : datasetName;
+		taskName = (argc > 5) ? argv[5] : taskName;
 	}
 
 	try {
@@ -892,6 +1095,30 @@ int main(int argc, char** argv) {
 			std::cout << "HNSW build time: " << retrieval.prepElapsedMs << " ms" << '\n';
 			std::cout << "HNSW search time: " << retrieval.elapsedMs << " ms" << '\n';
 		}
+
+		std::string algo = "cpp_sparse_inverted";
+		std::string params = "index=(cpp_sparse),query=(default)";
+		if (strategy == RetrievalStrategy::BruteForce) {
+			algo = "cpp_sparse_bruteforce";
+			// params = "index=(none),query=(bruteforce)";
+		} else if (strategy == RetrievalStrategy::Hnsw) {
+			algo = "cpp_sparse_hnsw";
+			// params = "index=(hnsw,M=" + std::to_string(hnswParams.M) +
+			// 	",efConstruction=" + std::to_string(hnswParams.efConstruction) +
+			// 	"),query=(efSearch=" + std::to_string(hnswParams.efSearch) + ")";
+		}
+		params = "TBD";
+
+		storeResults(outputPath,
+			   algo,
+			   datasetName,
+			   taskName,
+			   retrieval,
+			   kTop,
+			   static_cast<double>(retrieval.prepElapsedMs) / 1000.0,
+			   static_cast<double>(retrieval.elapsedMs) / 1000.0,
+			   params);
+		std::cout << "Stored HDF5 results at: " << outputPath << '\n';
 
 		if (!retrieval.topIndicesByQuery.empty()) {
 			std::cout << "First query top-" << kTop << " indices:";

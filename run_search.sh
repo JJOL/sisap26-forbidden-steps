@@ -1,4 +1,4 @@
-for task in 1 2 3; do
+for task in 3; do
     echo Running Task $task
     mkdir -p results/task-$task-spot-check
     docker run \
