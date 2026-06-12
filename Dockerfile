@@ -38,13 +38,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Build the application
 COPY main.cpp .
+# L path is /usr/lib/x86_64-linux-gnu/hdf5/serial/ if platform is linux/amd64 or /usr/lib/aarch64-linux-gnu/hdf5/serial/ if platform is linux/arm64
 RUN c++ -std=c++17 -O3 \
-        -I/usr/include/hdf5/serial \
-        main.cpp -o own_main.exe \
-        -L/usr/lib/aarch64-linux-gnu/hdf5/serial \
-        -lhdf5_cpp -lhdf5
-# our compilation: c++ -std=c++17 -I/opt/homebrew/include -L/opt/homebrew/lib -lhdf5_cpp -O3 main.cpp -o own_main.exe
-
+       -I/usr/include/hdf5/serial \
+       main.cpp -o own_main.exe \
+       -L/usr/lib/x86_64-linux-gnu/hdf5/serial/ \
+       #    -L/usr/lib/aarch64-linux-gnu/hdf5/serial/ \
+       -lhdf5_cpp -lhdf5
+       # our compilation: c++ -std=c++17 -I/opt/homebrew/include -L/opt/homebrew/lib -lhdf5_cpp -O3 main.cpp -o own_main.exe
+       
 
 # Run the application
 # CMD ["ls", "-l"]

@@ -93,16 +93,17 @@ download_dataset() {
 echo ""
 echo "=== Task 3: Sparse vector search ==="
 
-download_dataset "fiqa-dev" "fiqa-dev (188 MB)"
+download_dataset "nq" "nq (full, ~6.9 GB)"
+# download_dataset "fiqa-dev" "fiqa-dev (188 MB)"
 
-if [[ "$SMALL_ONLY" == false ]]; then
-    download_dataset "nq" "nq (full, ~6.9 GB)"
-else
-    echo ""
-    echo "-- nq (full) skipped (--small-only) --"
-fi
+# if [[ "$SMALL_ONLY" == false ]]; then
+#     download_dataset "nq" "nq (full, ~6.9 GB)"
+# else
+#     echo ""
+#     echo "-- nq (full) skipped (--small-only) --"
+# fi
 
-download_dataset "task-3-spot-check" "task-3-spot-check (validation dataset)"
+# download_dataset "task-3-spot-check" "task-3-spot-check (validation dataset)"
 
 # ---------------------------------------------------------------------------
 # Done
