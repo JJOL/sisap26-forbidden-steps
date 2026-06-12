@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <fstream>
 
 #include <H5Cpp.h>
 
@@ -949,7 +950,7 @@ void writeStringAttribute(H5::H5File& file, const std::string& name, const std::
 	attr.write(strType, value);
 }
 
-void writeDoubleAttribute(H5::H5File& file, const std::string& name, double value) {
+void writeDoubleAttribute(H5::H5File& file, co nst std::string& name, double value) {
 	const H5::DataSpace scalarSpace(H5S_SCALAR);
 	H5::Attribute attr = file.createAttribute(name, H5::PredType::NATIVE_DOUBLE, scalarSpace);
 	attr.write(H5::PredType::NATIVE_DOUBLE, &value);
@@ -1010,8 +1011,58 @@ void storeResults(const std::string& dst,
 	}
 }
 
+std::string findStringFieldInJson(std::ifstream& jsonFile, const std::string& fieldName, const std::string& errorMsg) {
+	// jsonFile.clear();
+	// jsonFile.seekg(0, std::ios::beg);
+	std::string line;
+	while (std::getline(jsonFile, line)) {
+		const std::size_t fieldPos = line.find('"' + fieldName + '"');
+		if (fieldPos != std::string::npos) {
+			const std::size_t colonPos = line.find(':', fieldPos);
+			if (colonPos != std::string::npos) {
+				const std::size_t quoteStart = line.find('"', colonPos);
+				const std::size_t quoteEnd = line.find('"', quoteStart + 1);
+				if (quoteStart != std::string::npos && quoteEnd != std::string::npos) {
+					return line.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
+				}
+			}
+		}
+	}
+	throw std::runtime_error(errorMsg);
+}
+
 int main(int argc, char** argv) {
-	const std::string filePath = (argc > 1) ? argv[1] : "data/fiqa-dev/fiqa-dev.h5";
+	std::string filePath = (argc > 1) ? argv[1] : "data/fiqa-dev/fiqa-dev.h5";
+
+	if (argc > 1) {
+		// if filePath extension is not .h5, then it is a directory that has a config.json. That json has a filename field that has the h5 file inside the directory.
+		if (std::filesystem::path(filePath).extension() == ".h5") {
+			std::cout << "Using input file: " << filePath << '\n';
+		} else {
+			std::cout << "Input path is not an .h5 file, treating it as a directory: " << filePath << '\n';
+			std::filesystem::path configPath = std::filesystem::path(filePath) / "config.json";
+			if (!std::filesystem::exists(configPath)) {
+				std::cerr << "Config file not found in directory: " << configPath << '\n';
+				return 1;
+			}
+			std::ifstream configFile(configPath);
+			if (!configFile.is_open()) {
+				std::cerr << "Failed to open config file: " << configPath << '\n';
+				return 1;
+			}
+			std::string h5Filename = findStringFieldInJson(configFile, "filename", "H5 file path not specified in config");
+			std::filesystem::path h5Path = std::filesystem::path(filePath) / h5Filename;
+			if (!std::filesystem::exists(h5Path)) {
+				std::cerr << "H5 file specified in config not found: " << h5Path << '\n';
+				return 1;
+			}
+			std::cout << "Using H5 file from config: " << h5Path << '\n';
+			filePath = h5Path.string();
+		}
+	} else {
+		std::cout << "No input file specified, using default: " << filePath << '\n';
+	}
+
 	constexpr std::size_t kTop = 30;
 	const RetrievalStrategy strategy = (argc > 2) ? parseStrategy(argv[2]) : RetrievalStrategy::InvertedIndex;
 	std::string outputPath = "results/cpp_task3/index=(cpp_sparse),query=(default).h5";
