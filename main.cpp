@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -14,8 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <fstream>
-
+#include <omp.h>
 #include <H5Cpp.h>
 
 // Compressed Sparse Row Matrix Representation
@@ -36,7 +34,6 @@ struct CsrMatrix {
 
 struct RetrievalResult {
 	std::vector<std::vector<int>> topIndicesByQuery;
-	std::vector<std::vector<float>> topScoresByQuery;
 	long long prepElapsedMs = 0;
 	long long elapsedMs = 0;
 	long long totalPostingsVisited = 0;
@@ -169,40 +166,6 @@ std::vector<int> topKIndicesQuickselect(const std::vector<float>& scores, std::s
 	return topIndices;
 }
 
-std::vector<ScoreDoc> topKScoredQuickselect(const std::vector<float>& scores, std::size_t k) {
-	std::vector<ScoreDoc> scored;
-	scored.reserve(scores.size());
-	for (std::size_t i = 0; i < scores.size(); ++i) {
-		scored.emplace_back(scores[i], static_cast<int>(i));
-	}
-
-	k = std::min(k, scored.size());
-	if (k == 0) {
-		return {};
-	}
-
-	if (k < scored.size()) {
-		std::nth_element(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k), scored.end(),
-					 [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
-						 if (lhs.first == rhs.first) {
-							 return lhs.second < rhs.second;
-						 }
-						 return lhs.first > rhs.first;
-					 });
-	}
-
-	std::sort(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k),
-		  [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
-			  if (lhs.first == rhs.first) {
-				  return lhs.second < rhs.second;
-			  }
-			  return lhs.first > rhs.first;
-		  });
-
-	scored.resize(k);
-	return scored;
-}
-
 std::vector<int> topKFromScoredDocsQuickselect(const std::vector<int>& touchedDocs,
 								const std::vector<float>& scores,
 								std::size_t k) {
@@ -235,42 +198,6 @@ std::vector<int> topKFromScoredDocsQuickselect(const std::vector<int>& touchedDo
 		topIndices.push_back(scored[i].second);
 	}
 	return topIndices;
-}
-
-std::vector<ScoreDoc> topKScoredFromTouchedDocsQuickselect(const std::vector<int>& touchedDocs,
-									   const std::vector<float>& scores,
-									   std::size_t k) {
-	std::vector<ScoreDoc> scored;
-	scored.reserve(touchedDocs.size());
-	for (int docId : touchedDocs) {
-		scored.emplace_back(scores[static_cast<std::size_t>(docId)], docId);
-	}
-
-	k = std::min(k, scored.size());
-	if (k == 0) {
-		return {};
-	}
-
-	if (k < scored.size()) {
-		std::nth_element(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k), scored.end(),
-					 [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
-						 if (lhs.first == rhs.first) {
-							 return lhs.second < rhs.second;
-						 }
-						 return lhs.first > rhs.first;
-					 });
-	}
-
-	std::sort(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k),
-		  [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
-			  if (lhs.first == rhs.first) {
-				  return lhs.second < rhs.second;
-			  }
-			  return lhs.first > rhs.first;
-		  });
-
-	scored.resize(k);
-	return scored;
 }
 
 InvertedIndex buildInvertedIndex(const CsrMatrix& db) {
@@ -372,22 +299,13 @@ RetrievalResult runBruteForceRetrieval(const CsrMatrix& db, const CsrMatrix& que
 
 	RetrievalResult result;
 	result.topIndicesByQuery.resize(static_cast<std::size_t>(queries.rows));
-	result.topScoresByQuery.resize(static_cast<std::size_t>(queries.rows));
 
 	std::vector<float> scores(static_cast<std::size_t>(db.rows), 0.0F);
 	for (long long q = 0; q < queries.rows; ++q) {
 		for (long long d = 0; d < db.rows; ++d) {
 			scores[static_cast<std::size_t>(d)] = dotProductRows(db, d, queries, q);
 		}
-		const std::vector<ScoreDoc> top = topKScoredQuickselect(scores, kTop);
-		auto& topIndices = result.topIndicesByQuery[static_cast<std::size_t>(q)];
-		auto& topScores = result.topScoresByQuery[static_cast<std::size_t>(q)];
-		topIndices.reserve(top.size());
-		topScores.reserve(top.size());
-		for (const ScoreDoc& item : top) {
-			topScores.push_back(item.first);
-			topIndices.push_back(item.second);
-		}
+		result.topIndicesByQuery[static_cast<std::size_t>(q)] = topKIndicesQuickselect(scores, kTop);
 
 		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
 			std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
@@ -401,7 +319,6 @@ RetrievalResult runBruteForceRetrieval(const CsrMatrix& db, const CsrMatrix& que
 RetrievalResult runInvertedIndexRetrieval(const CsrMatrix& db, const CsrMatrix& queries, std::size_t kTop) {
 	RetrievalResult result;
 	result.topIndicesByQuery.resize(static_cast<std::size_t>(queries.rows));
-	result.topScoresByQuery.resize(static_cast<std::size_t>(queries.rows));
 	result.queryCount = queries.rows;
 
 	Clock prepClock;
@@ -412,79 +329,71 @@ RetrievalResult runInvertedIndexRetrieval(const CsrMatrix& db, const CsrMatrix& 
 	Clock searchClock;
 	searchClock.start();
 
-	std::vector<float> scores(static_cast<std::size_t>(db.rows), 0.0F);
-	std::vector<unsigned int> seenStamp(static_cast<std::size_t>(db.rows), 0U);
-	std::vector<int> touchedDocs;
-	touchedDocs.reserve(4096);
+	#pragma omp parallel
+	{
+		// 1. These variables MUST be declared inside so each thread gets its own private copy
+		std::vector<float> scores(static_cast<std::size_t>(db.rows), 0.0F);
+		std::vector<unsigned int> seenStamp(static_cast<std::size_t>(db.rows), 0U);
+		std::vector<int> touchedDocs;
+		touchedDocs.reserve(4096);
+		unsigned int stamp = 1U;
 
-	unsigned int stamp = 1U;
-	for (long long q = 0; q < queries.rows; ++q) {
-		touchedDocs.clear();
-		long long postingsVisitedForQuery = 0;
-		const long long qStart = queries.indptr[static_cast<std::size_t>(q)];
-		const long long qEnd = queries.indptr[static_cast<std::size_t>(q + 1)];
+		// 2. Split queries into batches of 200 per thread
+		#pragma omp for schedule(dynamic, 200)
+		for (long long q = 0; q < queries.rows; ++q) {
+			touchedDocs.clear();
+			long long postingsVisitedForQuery = 0;
+			const long long qStart = queries.indptr[static_cast<std::size_t>(q)];
+			const long long qEnd = queries.indptr[static_cast<std::size_t>(q + 1)];
 
-		for (long long p = qStart; p < qEnd; ++p) {
-			const int term = queries.indices[static_cast<std::size_t>(p)];
-			if (term < 0 || term >= index.terms) {
-				continue;
-			}
-
-			const float qVal = queries.data[static_cast<std::size_t>(p)];
-			const long long postStart = index.termIndptr[static_cast<std::size_t>(term)];
-			const long long postEnd = index.termIndptr[static_cast<std::size_t>(term + 1)];
-			postingsVisitedForQuery += (postEnd - postStart);
-
-			for (long long it = postStart; it < postEnd; ++it) {
-				const int docId = index.docIds[static_cast<std::size_t>(it)];
-				if (seenStamp[static_cast<std::size_t>(docId)] != stamp) {
-					seenStamp[static_cast<std::size_t>(docId)] = stamp;
-					scores[static_cast<std::size_t>(docId)] = 0.0F;
-					touchedDocs.push_back(docId);
+			for (long long p = qStart; p < qEnd; ++p) {
+				const int term = queries.indices[static_cast<std::size_t>(p)];
+				if (term < 0 || term >= index.terms) {
+					continue;
 				}
-				scores[static_cast<std::size_t>(docId)] += qVal * index.docValues[static_cast<std::size_t>(it)];
+
+				const float qVal = queries.data[static_cast<std::size_t>(p)];
+				const long long postStart = index.termIndptr[static_cast<std::size_t>(term)];
+				const long long postEnd = index.termIndptr[static_cast<std::size_t>(term + 1)];
+				postingsVisitedForQuery += (postEnd - postStart);
+
+				for (long long it = postStart; it < postEnd; ++it) {
+					const int docId = index.docIds[static_cast<std::size_t>(it)];
+					if (seenStamp[static_cast<std::size_t>(docId)] != stamp) {
+						seenStamp[static_cast<std::size_t>(docId)] = stamp;
+						scores[static_cast<std::size_t>(docId)] = 0.0F;
+						touchedDocs.push_back(docId);
+					}
+					scores[static_cast<std::size_t>(docId)] += qVal * index.docValues[static_cast<std::size_t>(it)];
+				}
 			}
 
-			// The same thing but LOOP-UNROLLED (didnt have a big impact....)
-			// accumulatePostingRange(index,
-			// 		     postStart,
-			// 		     postEnd,
-			// 		     qVal,
-			// 		     scores,
-			// 		     seenStamp,
-			// 		     stamp,
-			// 		     touchedDocs);
+			result.topIndicesByQuery[static_cast<std::size_t>(q)] = topKFromScoredDocsQuickselect(touchedDocs, scores, kTop);
+			
+			// 3. Lock the statistics to accumulate them safely
+			#pragma omp critical
+			{
+				result.totalPostingsVisited += postingsVisitedForQuery;
+				result.totalTouchedDocs += static_cast<long long>(touchedDocs.size());
+				result.maxTouchedDocs = std::max(result.maxTouchedDocs, static_cast<long long>(touchedDocs.size()));
+				if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
+					std::cout << "Processed query " << (q + 1) << "/" << queries.rows
+					<< " (touched docs: " << touchedDocs.size()
+					<< ", postings visited: " << postingsVisitedForQuery << ")" << '\n';
+				}
+			}
+			++stamp;
+			if (stamp == 0U) {
+				std::fill(seenStamp.begin(), seenStamp.end(), 0U);
+				stamp = 1U;
+			}
 		}
-
-		const std::vector<ScoreDoc> top = topKScoredFromTouchedDocsQuickselect(touchedDocs, scores, kTop);
-		auto& topIndices = result.topIndicesByQuery[static_cast<std::size_t>(q)];
-		auto& topScores = result.topScoresByQuery[static_cast<std::size_t>(q)];
-		topIndices.reserve(top.size());
-		topScores.reserve(top.size());
-		for (const ScoreDoc& item : top) {
-			topScores.push_back(item.first);
-			topIndices.push_back(item.second);
-		}
-		result.totalPostingsVisited += postingsVisitedForQuery;
-		result.totalTouchedDocs += static_cast<long long>(touchedDocs.size());
-		result.maxTouchedDocs = std::max(result.maxTouchedDocs, static_cast<long long>(touchedDocs.size()));
-
-		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
-			std::cout << "Processed query " << (q + 1) << "/" << queries.rows
-					  << " (touched docs: " << touchedDocs.size()
-					  << ", postings visited: " << postingsVisitedForQuery << ")" << '\n';
-		}
-
-		++stamp;
-		if (stamp == 0U) {
-			std::fill(seenStamp.begin(), seenStamp.end(), 0U);
-			stamp = 1U;
-		}
-	}
+	} // End of OpenMP Block
 
 	result.elapsedMs = searchClock.elapsedMs();
 	return result;
 }
+
 
 int sampleHnswLevel(std::mt19937& rng, int M) {
 	if (M <= 1) {
@@ -790,7 +699,6 @@ RetrievalResult runHnswRetrieval(const CsrMatrix& db,
 
 	RetrievalResult result;
 	result.topIndicesByQuery.resize(static_cast<std::size_t>(queries.rows));
-	result.topScoresByQuery.resize(static_cast<std::size_t>(queries.rows));
 	result.queryCount = queries.rows;
 
 	Clock prepClock;
@@ -833,15 +741,11 @@ RetrievalResult runHnswRetrieval(const CsrMatrix& db,
 		++stamp;
 
 		std::vector<int> top;
-		std::vector<float> topScores;
 		top.reserve(kTop);
-		topScores.reserve(kTop);
 		for (std::size_t i = 0; i < candidates.size() && i < kTop; ++i) {
 			top.push_back(candidates[i].second);
-			topScores.push_back(candidates[i].first);
 		}
 		result.topIndicesByQuery[static_cast<std::size_t>(q)] = std::move(top);
-		result.topScoresByQuery[static_cast<std::size_t>(q)] = std::move(topScores);
 
 		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
 			std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
@@ -924,173 +828,15 @@ CsrMatrix loadSparseMatrix(const H5::Group& group) {
 	return mat;
 }
 
-bool isIntegerString(const std::string& value) {
-	if (value.empty()) {
-		return false;
-	}
-	std::size_t start = 0;
-	if (value[0] == '+' || value[0] == '-') {
-		start = 1;
-	}
-	if (start >= value.size()) {
-		return false;
-	}
-	for (std::size_t i = start; i < value.size(); ++i) {
-		if (value[i] < '0' || value[i] > '9') {
-			return false;
-		}
-	}
-	return true;
-}
-
-void writeStringAttribute(H5::H5File& file, const std::string& name, const std::string& value) {
-	const H5::StrType strType(H5::PredType::C_S1, H5T_VARIABLE);
-	const H5::DataSpace scalarSpace(H5S_SCALAR);
-	H5::Attribute attr = file.createAttribute(name, strType, scalarSpace);
-	attr.write(strType, value);
-}
-
-void writeDoubleAttribute(H5::H5File& file, co nst std::string& name, double value) {
-	const H5::DataSpace scalarSpace(H5S_SCALAR);
-	H5::Attribute attr = file.createAttribute(name, H5::PredType::NATIVE_DOUBLE, scalarSpace);
-	attr.write(H5::PredType::NATIVE_DOUBLE, &value);
-}
-
-void storeResults(const std::string& dst,
-			  const std::string& algo,
-			  const std::string& dataset,
-			  const std::string& task,
-			  const RetrievalResult& retrieval,
-			  std::size_t kTop,
-			  double buildTimeSeconds,
-			  double queryTimeSeconds,
-			  const std::string& params) {
-	if (retrieval.topIndicesByQuery.size() != retrieval.topScoresByQuery.size()) {
-		throw std::runtime_error("Invalid retrieval result: index and score matrix sizes differ");
-	}
-
-	std::filesystem::path outPath(dst);
-	if (!outPath.parent_path().empty()) {
-		std::filesystem::create_directories(outPath.parent_path());
-	}
-
-	const std::size_t nQueries = retrieval.topIndicesByQuery.size();
-	std::vector<int> flatKnns(nQueries * kTop, 0);
-	std::vector<float> flatDists(nQueries * kTop, 0.0F);
-
-	for (std::size_t q = 0; q < nQueries; ++q) {
-		const auto& indices = retrieval.topIndicesByQuery[q];
-		const auto& dists = retrieval.topScoresByQuery[q];
-		const std::size_t available = std::min({kTop, indices.size(), dists.size()});
-		for (std::size_t i = 0; i < available; ++i) {
-			// Ground truth and baseline outputs are 1-based.
-			flatKnns[q * kTop + i] = indices[i] + 1;
-			flatDists[q * kTop + i] = dists[i];
-		}
-	}
-
-	H5::H5File file(dst, H5F_ACC_TRUNC);
-	writeStringAttribute(file, "algo", algo);
-	writeStringAttribute(file, "dataset", dataset);
-	writeStringAttribute(file, "task", task);
-	writeDoubleAttribute(file, "buildtime", buildTimeSeconds);
-	writeDoubleAttribute(file, "querytime", queryTimeSeconds);
-	writeStringAttribute(file, "params", params);
-
-	hsize_t dims[2] = {static_cast<hsize_t>(nQueries), static_cast<hsize_t>(kTop)};
-	H5::DataSpace matrixSpace(2, dims);
-
-	H5::DataSet knnsDs = file.createDataSet("knns", H5::PredType::NATIVE_INT, matrixSpace);
-	if (!flatKnns.empty()) {
-		knnsDs.write(flatKnns.data(), H5::PredType::NATIVE_INT);
-	}
-
-	H5::DataSet distsDs = file.createDataSet("dists", H5::PredType::NATIVE_FLOAT, matrixSpace);
-	if (!flatDists.empty()) {
-		distsDs.write(flatDists.data(), H5::PredType::NATIVE_FLOAT);
-	}
-}
-
-std::string findStringFieldInJson(std::ifstream& jsonFile, const std::string& fieldName, const std::string& errorMsg) {
-	// jsonFile.clear();
-	// jsonFile.seekg(0, std::ios::beg);
-	std::string line;
-	while (std::getline(jsonFile, line)) {
-		const std::size_t fieldPos = line.find('"' + fieldName + '"');
-		if (fieldPos != std::string::npos) {
-			const std::size_t colonPos = line.find(':', fieldPos);
-			if (colonPos != std::string::npos) {
-				const std::size_t quoteStart = line.find('"', colonPos);
-				const std::size_t quoteEnd = line.find('"', quoteStart + 1);
-				if (quoteStart != std::string::npos && quoteEnd != std::string::npos) {
-					return line.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
-				}
-			}
-		}
-	}
-	throw std::runtime_error(errorMsg);
-}
-
 int main(int argc, char** argv) {
-	std::string filePath = (argc > 1) ? argv[1] : "data/fiqa-dev/fiqa-dev.h5";
-
-	if (argc > 1) {
-		// if filePath extension is not .h5, then it is a directory that has a config.json. That json has a filename field that has the h5 file inside the directory.
-		if (std::filesystem::path(filePath).extension() == ".h5") {
-			std::cout << "Using input file: " << filePath << '\n';
-		} else {
-			std::cout << "Input path is not an .h5 file, treating it as a directory: " << filePath << '\n';
-			std::filesystem::path configPath = std::filesystem::path(filePath) / "config.json";
-			if (!std::filesystem::exists(configPath)) {
-				std::cerr << "Config file not found in directory: " << configPath << '\n';
-				return 1;
-			}
-			std::ifstream configFile(configPath);
-			if (!configFile.is_open()) {
-				std::cerr << "Failed to open config file: " << configPath << '\n';
-				return 1;
-			}
-			std::string h5Filename = findStringFieldInJson(configFile, "filename", "H5 file path not specified in config");
-			std::filesystem::path h5Path = std::filesystem::path(filePath) / h5Filename;
-			if (!std::filesystem::exists(h5Path)) {
-				std::cerr << "H5 file specified in config not found: " << h5Path << '\n';
-				return 1;
-			}
-			std::cout << "Using H5 file from config: " << h5Path << '\n';
-			filePath = h5Path.string();
-		}
-	} else {
-		std::cout << "No input file specified, using default: " << filePath << '\n';
-	}
-
+	const std::string filePath = (argc > 1) ? argv[1] : "data/fiqa-dev/fiqa-dev.h5";
 	constexpr std::size_t kTop = 30;
 	const RetrievalStrategy strategy = (argc > 2) ? parseStrategy(argv[2]) : RetrievalStrategy::InvertedIndex;
-	std::string outputPath = "results/cpp_task3/index=(cpp_sparse),query=(default).h5";
-	std::string datasetName = "unknown";
-	std::string taskName = "task3";
 	HnswParams hnswParams;
-
 	if (strategy == RetrievalStrategy::Hnsw) {
-		const bool oldStyleHnswArgs = (argc > 3) && isIntegerString(argv[3]);
-		if (oldStyleHnswArgs) {
-			hnswParams.M = (argc > 3) ? std::stoi(argv[3]) : 32;
-			hnswParams.efConstruction = (argc > 4) ? std::stoi(argv[4]) : 200;
-			hnswParams.efSearch = (argc > 5) ? std::stoi(argv[5]) : 120;
-			outputPath = (argc > 6) ? argv[6] : outputPath;
-			datasetName = (argc > 7) ? argv[7] : datasetName;
-			taskName = (argc > 8) ? argv[8] : taskName;
-		} else {
-			outputPath = (argc > 3) ? argv[3] : outputPath;
-			datasetName = (argc > 4) ? argv[4] : datasetName;
-			taskName = (argc > 5) ? argv[5] : taskName;
-			hnswParams.M = (argc > 6) ? std::stoi(argv[6]) : 32;
-			hnswParams.efConstruction = (argc > 7) ? std::stoi(argv[7]) : 200;
-			hnswParams.efSearch = (argc > 8) ? std::stoi(argv[8]) : 120;
-		}
-	} else {
-		outputPath = (argc > 3) ? argv[3] : outputPath;
-		datasetName = (argc > 4) ? argv[4] : datasetName;
-		taskName = (argc > 5) ? argv[5] : taskName;
+		hnswParams.M = (argc > 3) ? std::stoi(argv[3]) : 32;
+		hnswParams.efConstruction = (argc > 4) ? std::stoi(argv[4]) : 200;
+		hnswParams.efSearch = (argc > 5) ? std::stoi(argv[5]) : 120;
 	}
 
 	try {
@@ -1146,30 +892,6 @@ int main(int argc, char** argv) {
 			std::cout << "HNSW build time: " << retrieval.prepElapsedMs << " ms" << '\n';
 			std::cout << "HNSW search time: " << retrieval.elapsedMs << " ms" << '\n';
 		}
-
-		std::string algo = "cpp_sparse_inverted";
-		std::string params = "index=(cpp_sparse),query=(default)";
-		if (strategy == RetrievalStrategy::BruteForce) {
-			algo = "cpp_sparse_bruteforce";
-			// params = "index=(none),query=(bruteforce)";
-		} else if (strategy == RetrievalStrategy::Hnsw) {
-			algo = "cpp_sparse_hnsw";
-			// params = "index=(hnsw,M=" + std::to_string(hnswParams.M) +
-			// 	",efConstruction=" + std::to_string(hnswParams.efConstruction) +
-			// 	"),query=(efSearch=" + std::to_string(hnswParams.efSearch) + ")";
-		}
-		params = "TBD";
-
-		storeResults(outputPath,
-			   algo,
-			   datasetName,
-			   taskName,
-			   retrieval,
-			   kTop,
-			   static_cast<double>(retrieval.prepElapsedMs) / 1000.0,
-			   static_cast<double>(retrieval.elapsedMs) / 1000.0,
-			   params);
-		std::cout << "Stored HDF5 results at: " << outputPath << '\n';
 
 		if (!retrieval.topIndicesByQuery.empty()) {
 			std::cout << "First query top-" << kTop << " indices:";
