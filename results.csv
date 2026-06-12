@@ -1,0 +1,8 @@
+dataset,task,algo,buildtime,querytime,params,recall
+nq,task3,cpp_sparse_wand,6.076,1548.188,TBD,0.9998551564310545
+fiqa-small,task3,cpp_sparse_inverted,0.004,0.032,TBD,1.0
+fiqa-dev,task3,cpp_sparse_wand,0.053,48.156,TBD,0.11964500601684717
+nq,task3,cpp_sparse_inverted_sorted_docids,6.371,75.397,TBD,0.9999130938586327
+nq,task3,cpp_sparse_inverted,3.742,26.727,TBD,0.9999130938586327
+fiqa-small,task3,pytorch_sparse_mm,0.0,0.35450243949890137,pytorch_sparse_mm,1.0
+nq,task3,cpp_sparse_inverted,4.21,74.575,TBD,0.9999130938586327
