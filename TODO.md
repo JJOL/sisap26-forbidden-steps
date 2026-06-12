@@ -16,16 +16,18 @@ tira-cli code-submission \
 - Solution
     - Try Brute Force [X]
     - Try Sparse Efficient Brute Force [X]
-    - Try IVF 
-    - Try Terms Ordered (Cached scores)
-    - Try Product Quantization
-    - Try HNSW
+    - Try IVF [X]
+    - Try Terms Ordered (Cached scores) [X]
+    - Try Product Quantization [X]
+        * Results: NO -- NEEDS TO CONVERT TO DENSE
+    - Try HNSW [X]
+        * Results: NO: ENORMOUSE INDEX BUILD TIME, NO GAIN ON SPEED WHEN MAINTAINING RECALL > 0.90
     - Learned Index? Tabu-Search lowering 10% to 10%
-        Or for the best scores, keep the percentil where their second or third best term lies in
-
-    - Then try to parallelize Top-3 and choose best option
+        - Weak-AND:
+        * Results: Access Pattern based on many pointer increments and skips has huge latency and overhead compared to IVF
+    - Try Hyprid MaxScores with Inverted Files or Block-Max MaxScore: https://medium.com/@shivamprasad484/maxscore-algorithm-making-search-lightning-fast-19ce92bf1d41, https://www.elastic.co/search-labs/blog/more-skipping-with-bm-maxscore
+    - Parallelize using OpenMP
 
 
 CRITERION:
 - Best Top-3 Algorithms
-- 
