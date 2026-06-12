@@ -5,15 +5,16 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <queue>
 #include <random>
 #include <stdexcept>
+#include <filesystem>
 #include <string>
 #include <vector>
+#include <omp.h>
 #include <fstream>
 
 #include <H5Cpp.h>
@@ -167,40 +168,6 @@ std::vector<int> topKIndicesQuickselect(const std::vector<float>& scores, std::s
 	}
 
 	return topIndices;
-}
-
-std::vector<ScoreDoc> topKScoredQuickselect(const std::vector<float>& scores, std::size_t k) {
-	std::vector<ScoreDoc> scored;
-	scored.reserve(scores.size());
-	for (std::size_t i = 0; i < scores.size(); ++i) {
-		scored.emplace_back(scores[i], static_cast<int>(i));
-	}
-
-	k = std::min(k, scored.size());
-	if (k == 0) {
-		return {};
-	}
-
-	if (k < scored.size()) {
-		std::nth_element(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k), scored.end(),
-					 [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
-						 if (lhs.first == rhs.first) {
-							 return lhs.second < rhs.second;
-						 }
-						 return lhs.first > rhs.first;
-					 });
-	}
-
-	std::sort(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(k),
-		  [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
-			  if (lhs.first == rhs.first) {
-				  return lhs.second < rhs.second;
-			  }
-			  return lhs.first > rhs.first;
-		  });
-
-	scored.resize(k);
-	return scored;
 }
 
 std::vector<int> topKFromScoredDocsQuickselect(const std::vector<int>& touchedDocs,
@@ -379,15 +346,7 @@ RetrievalResult runBruteForceRetrieval(const CsrMatrix& db, const CsrMatrix& que
 		for (long long d = 0; d < db.rows; ++d) {
 			scores[static_cast<std::size_t>(d)] = dotProductRows(db, d, queries, q);
 		}
-		const std::vector<ScoreDoc> top = topKScoredQuickselect(scores, kTop);
-		auto& topIndices = result.topIndicesByQuery[static_cast<std::size_t>(q)];
-		auto& topScores = result.topScoresByQuery[static_cast<std::size_t>(q)];
-		topIndices.reserve(top.size());
-		topScores.reserve(top.size());
-		for (const ScoreDoc& item : top) {
-			topScores.push_back(item.first);
-			topIndices.push_back(item.second);
-		}
+		result.topIndicesByQuery[static_cast<std::size_t>(q)] = topKIndicesQuickselect(scores, kTop);
 
 		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
 			std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
@@ -412,79 +371,81 @@ RetrievalResult runInvertedIndexRetrieval(const CsrMatrix& db, const CsrMatrix& 
 	Clock searchClock;
 	searchClock.start();
 
-	std::vector<float> scores(static_cast<std::size_t>(db.rows), 0.0F);
-	std::vector<unsigned int> seenStamp(static_cast<std::size_t>(db.rows), 0U);
-	std::vector<int> touchedDocs;
-	touchedDocs.reserve(4096);
+	#pragma omp parallel
+	{
+		// 1. These variables MUST be declared inside so each thread gets its own private copy
+		std::vector<float> scores(static_cast<std::size_t>(db.rows), 0.0F);
+		std::vector<unsigned int> seenStamp(static_cast<std::size_t>(db.rows), 0U);
+		std::vector<int> touchedDocs;
+		touchedDocs.reserve(4096);
+		unsigned int stamp = 1U;
 
-	unsigned int stamp = 1U;
-	for (long long q = 0; q < queries.rows; ++q) {
-		touchedDocs.clear();
-		long long postingsVisitedForQuery = 0;
-		const long long qStart = queries.indptr[static_cast<std::size_t>(q)];
-		const long long qEnd = queries.indptr[static_cast<std::size_t>(q + 1)];
+		// 2. Split queries into batches of 200 per thread
+		#pragma omp for schedule(dynamic, 200)
+		for (long long q = 0; q < queries.rows; ++q) {
+			touchedDocs.clear();
+			long long postingsVisitedForQuery = 0;
+			const long long qStart = queries.indptr[static_cast<std::size_t>(q)];
+			const long long qEnd = queries.indptr[static_cast<std::size_t>(q + 1)];
 
-		for (long long p = qStart; p < qEnd; ++p) {
-			const int term = queries.indices[static_cast<std::size_t>(p)];
-			if (term < 0 || term >= index.terms) {
-				continue;
-			}
-
-			const float qVal = queries.data[static_cast<std::size_t>(p)];
-			const long long postStart = index.termIndptr[static_cast<std::size_t>(term)];
-			const long long postEnd = index.termIndptr[static_cast<std::size_t>(term + 1)];
-			postingsVisitedForQuery += (postEnd - postStart);
-
-			for (long long it = postStart; it < postEnd; ++it) {
-				const int docId = index.docIds[static_cast<std::size_t>(it)];
-				if (seenStamp[static_cast<std::size_t>(docId)] != stamp) {
-					seenStamp[static_cast<std::size_t>(docId)] = stamp;
-					scores[static_cast<std::size_t>(docId)] = 0.0F;
-					touchedDocs.push_back(docId);
+			for (long long p = qStart; p < qEnd; ++p) {
+				const int term = queries.indices[static_cast<std::size_t>(p)];
+				if (term < 0 || term >= index.terms) {
+					continue;
 				}
-				scores[static_cast<std::size_t>(docId)] += qVal * index.docValues[static_cast<std::size_t>(it)];
+
+				const float qVal = queries.data[static_cast<std::size_t>(p)];
+				const long long postStart = index.termIndptr[static_cast<std::size_t>(term)];
+				const long long postEnd = index.termIndptr[static_cast<std::size_t>(term + 1)];
+				postingsVisitedForQuery += (postEnd - postStart);
+
+				for (long long it = postStart; it < postEnd; ++it) {
+					const int docId = index.docIds[static_cast<std::size_t>(it)];
+					if (seenStamp[static_cast<std::size_t>(docId)] != stamp) {
+						seenStamp[static_cast<std::size_t>(docId)] = stamp;
+						scores[static_cast<std::size_t>(docId)] = 0.0F;
+						touchedDocs.push_back(docId);
+					}
+					scores[static_cast<std::size_t>(docId)] += qVal * index.docValues[static_cast<std::size_t>(it)];
+				}
 			}
 
-			// The same thing but LOOP-UNROLLED (didnt have a big impact....)
-			// accumulatePostingRange(index,
-			// 		     postStart,
-			// 		     postEnd,
-			// 		     qVal,
-			// 		     scores,
-			// 		     seenStamp,
-			// 		     stamp,
-			// 		     touchedDocs);
-		}
+			// result.topIndicesByQuery[static_cast<std::size_t>(q)] = topKFromScoredDocsQuickselect(touchedDocs, scores, kTop);
 
-		const std::vector<ScoreDoc> top = topKScoredFromTouchedDocsQuickselect(touchedDocs, scores, kTop);
-		auto& topIndices = result.topIndicesByQuery[static_cast<std::size_t>(q)];
-		auto& topScores = result.topScoresByQuery[static_cast<std::size_t>(q)];
-		topIndices.reserve(top.size());
-		topScores.reserve(top.size());
-		for (const ScoreDoc& item : top) {
-			topScores.push_back(item.first);
-			topIndices.push_back(item.second);
+			const std::vector<ScoreDoc> top = topKScoredFromTouchedDocsQuickselect(touchedDocs, scores, kTop);
+			auto& topIndices = result.topIndicesByQuery[static_cast<std::size_t>(q)];
+			auto& topScores = result.topScoresByQuery[static_cast<std::size_t>(q)];
+			topIndices.reserve(top.size());
+			topScores.reserve(top.size());
+			for (const ScoreDoc& item : top) {
+				topScores.push_back(item.first);
+				topIndices.push_back(item.second);
+			}
+			
+			// 3. Lock the statistics to accumulate them safely
+			#pragma omp critical
+			{
+				result.totalPostingsVisited += postingsVisitedForQuery;
+				result.totalTouchedDocs += static_cast<long long>(touchedDocs.size());
+				result.maxTouchedDocs = std::max(result.maxTouchedDocs, static_cast<long long>(touchedDocs.size()));
+				if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
+					std::cout << "Processed query " << (q + 1) << "/" << queries.rows
+					<< " (touched docs: " << touchedDocs.size()
+					<< ", postings visited: " << postingsVisitedForQuery << ")" << '\n';
+				}
+			}
+			++stamp;
+			if (stamp == 0U) {
+				std::fill(seenStamp.begin(), seenStamp.end(), 0U);
+				stamp = 1U;
+			}
 		}
-		result.totalPostingsVisited += postingsVisitedForQuery;
-		result.totalTouchedDocs += static_cast<long long>(touchedDocs.size());
-		result.maxTouchedDocs = std::max(result.maxTouchedDocs, static_cast<long long>(touchedDocs.size()));
-
-		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
-			std::cout << "Processed query " << (q + 1) << "/" << queries.rows
-					  << " (touched docs: " << touchedDocs.size()
-					  << ", postings visited: " << postingsVisitedForQuery << ")" << '\n';
-		}
-
-		++stamp;
-		if (stamp == 0U) {
-			std::fill(seenStamp.begin(), seenStamp.end(), 0U);
-			stamp = 1U;
-		}
-	}
+	} // End of OpenMP Block
 
 	result.elapsedMs = searchClock.elapsedMs();
 	return result;
 }
+
 
 int sampleHnswLevel(std::mt19937& rng, int M) {
 	if (M <= 1) {
@@ -790,7 +751,6 @@ RetrievalResult runHnswRetrieval(const CsrMatrix& db,
 
 	RetrievalResult result;
 	result.topIndicesByQuery.resize(static_cast<std::size_t>(queries.rows));
-	result.topScoresByQuery.resize(static_cast<std::size_t>(queries.rows));
 	result.queryCount = queries.rows;
 
 	Clock prepClock;
@@ -833,15 +793,11 @@ RetrievalResult runHnswRetrieval(const CsrMatrix& db,
 		++stamp;
 
 		std::vector<int> top;
-		std::vector<float> topScores;
 		top.reserve(kTop);
-		topScores.reserve(kTop);
 		for (std::size_t i = 0; i < candidates.size() && i < kTop; ++i) {
 			top.push_back(candidates[i].second);
-			topScores.push_back(candidates[i].first);
 		}
 		result.topIndicesByQuery[static_cast<std::size_t>(q)] = std::move(top);
-		result.topScoresByQuery[static_cast<std::size_t>(q)] = std::move(topScores);
 
 		if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
 			std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
@@ -950,7 +906,7 @@ void writeStringAttribute(H5::H5File& file, const std::string& name, const std::
 	attr.write(strType, value);
 }
 
-void writeDoubleAttribute(H5::H5File& file, co nst std::string& name, double value) {
+void writeDoubleAttribute(H5::H5File& file, const std::string& name, double value) {
 	const H5::DataSpace scalarSpace(H5S_SCALAR);
 	H5::Attribute attr = file.createAttribute(name, H5::PredType::NATIVE_DOUBLE, scalarSpace);
 	attr.write(H5::PredType::NATIVE_DOUBLE, &value);
@@ -966,6 +922,10 @@ void storeResults(const std::string& dst,
 			  double queryTimeSeconds,
 			  const std::string& params) {
 	if (retrieval.topIndicesByQuery.size() != retrieval.topScoresByQuery.size()) {
+		std::cerr << "Error: Retrieval result has mismatched sizes for indices and scores\n";
+		// print sizes
+		std::cerr << "topIndicesByQuery size: " << retrieval.topIndicesByQuery.size() << '\n';
+		std::cerr << "topScoresByQuery size: " << retrieval.topScoresByQuery.size() << '\n';
 		throw std::runtime_error("Invalid retrieval result: index and score matrix sizes differ");
 	}
 
@@ -1030,6 +990,7 @@ std::string findStringFieldInJson(std::ifstream& jsonFile, const std::string& fi
 	}
 	throw std::runtime_error(errorMsg);
 }
+
 
 int main(int argc, char** argv) {
 	std::string filePath = (argc > 1) ? argv[1] : "data/fiqa-dev/fiqa-dev.h5";
