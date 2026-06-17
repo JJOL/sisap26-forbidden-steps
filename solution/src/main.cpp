@@ -275,71 +275,79 @@ std::vector<ScoreDoc> topKScoredFromTouchedQuickselect(
 }
 
 void searchTopKInvertedIndex(const InvertedIndex &index, const CSRMatrix &db, const CSRMatrix &queries, std::size_t kTop, int numThreads, RetrievalResult& result) {
+    omp_set_num_threads(numThreads);
 
-    std::vector<float> scores(db.rows, 0.0);
-    std::vector<unsigned int> seenStamp(db.rows, 0);
-    std::vector<int> touchedDocs;
-    touchedDocs.reserve(4096); // at least 4k touched (it goes beyond, about 90% which is 57k for the fiqa dataset)
-    unsigned int stamp = 1;
+    #pragma omp parallel
+    {
+        std::vector<float> scores(db.rows, 0.0);
+        std::vector<unsigned int> seenStamp(db.rows, 0);
+        std::vector<int> touchedDocs;
+        touchedDocs.reserve(4096); // at least 4k touched (it goes beyond, about 90% which is 57k for the fiqa dataset)
+        unsigned int stamp = 1;
 
-    for (long long q = 0; q < queries.rows; q++) {
-        touchedDocs.clear();
-        long long postingsVisitedForQuery = 0;
-        const long long qStart = queries.indptr[q];
-        const long long qEnd = queries.indptr[q + 1];
+        #pragma omp for schedule(dynamic, 200)
+        for (long long q = 0; q < queries.rows; q++) {
+            touchedDocs.clear();
+            long long postingsVisitedForQuery = 0;
+            const long long qStart = queries.indptr[q];
+            const long long qEnd = queries.indptr[q + 1];
 
-        for (long long tInd = qStart; tInd < qEnd; tInd++) {
-            const int term = queries.indices[tInd];
-            if (term < 0 || term >= index.terms) {
-                throw std::runtime_error("Term index out of bounds in query: " + std::to_string(term));
-            }
-
-            const float qVal = queries.data[tInd];
-
-            const long long postStart = index.termIndptr[term];
-            const long long postEnd = index.termIndptr[term + 1];
-            postingsVisitedForQuery += (postEnd - postStart);
-
-            for (long long pInd = postStart; pInd < postEnd; pInd++) {
-                const int docId = index.docIds[pInd];
-                if (seenStamp[docId] != stamp) {
-                    seenStamp[docId] = stamp;
-                    scores[docId] = 0.0F;
-                    touchedDocs.push_back(docId);
+            for (long long tInd = qStart; tInd < qEnd; tInd++) {
+                const int term = queries.indices[tInd];
+                if (term < 0 || term >= index.terms) {
+                    throw std::runtime_error("Term index out of bounds in query: " + std::to_string(term));
                 }
-                scores[docId] += qVal * index.docValues[pInd];
+
+                const float qVal = queries.data[tInd];
+
+                const long long postStart = index.termIndptr[term];
+                const long long postEnd = index.termIndptr[term + 1];
+                postingsVisitedForQuery += (postEnd - postStart);
+
+                for (long long pInd = postStart; pInd < postEnd; pInd++) {
+                    const int docId = index.docIds[pInd];
+                    if (seenStamp[docId] != stamp) {
+                        seenStamp[docId] = stamp;
+                        scores[docId] = 0.0F;
+                        touchedDocs.push_back(docId);
+                    }
+                    scores[docId] += qVal * index.docValues[pInd];
+                }
+            }
+
+            const std::vector<ScoreDoc> top = topKScoredFromTouchedQuickselect(touchedDocs, scores, kTop);
+            // make aliases for convenience
+            auto& topIndices = result.topIndicesByQuery[q];
+            auto& topScores = result.topScoresByQuery[q];
+            topIndices.reserve(top.size());
+            topScores.reserve(top.size());
+
+            // push top doc/vector rows indices and scores to the result
+            for (const ScoreDoc& item : top) {
+                topScores.push_back(item.first);
+                topIndices.push_back(item.second);
+            }
+
+            #pragma omp critical
+            {
+                result.totalPostingsVisited += postingsVisitedForQuery;
+                result.totalTouchedDocs += touchedDocs.size();
+                result.maxTouchedDocs = std::max(result.maxTouchedDocs, (long long)touchedDocs.size());
+                if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
+                    std::cout << "Processed query " << (q + 1) << "/" << queries.rows
+                            << " (touched docs: " << touchedDocs.size()
+                            << ", postings visited: " << postingsVisitedForQuery << ")" << std::endl;
+                }
+            }
+
+            // Update stamp for next query docs reset
+            stamp++;
+            if (stamp == 0U) {
+                std::fill(seenStamp.begin(), seenStamp.end(), 0U);
+                stamp = 1U;
             }
         }
-
-        const std::vector<ScoreDoc> top = topKScoredFromTouchedQuickselect(touchedDocs, scores, kTop);
-        // make aliases for convenience
-        auto& topIndices = result.topIndicesByQuery[q];
-        auto& topScores = result.topScoresByQuery[q];
-        topIndices.reserve(top.size());
-        topScores.reserve(top.size());
-
-        // push top doc/vector rows indices and scores to the result
-        for (const ScoreDoc& item : top) {
-            topScores.push_back(item.first);
-            topIndices.push_back(item.second);
-        }
-
-        result.totalPostingsVisited += postingsVisitedForQuery;
-        result.totalTouchedDocs += touchedDocs.size();
-        result.maxTouchedDocs = std::max(result.maxTouchedDocs, (long long)touchedDocs.size());
-        if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
-            std::cout << "Processed query " << (q + 1) << "/" << queries.rows
-                      << " (touched docs: " << touchedDocs.size()
-                      << ", postings visited: " << postingsVisitedForQuery << ")" << std::endl;
-        }
-
-        // Update stamp for next query docs reset
-        stamp++;
-        if (stamp == 0U) {
-            std::fill(seenStamp.begin(), seenStamp.end(), 0U);
-            stamp = 1U;
-        }
-    }
+    } // End of OpenMP Block
 }
 
 RetrievalResult runInvertedIndexRetrieval(const CSRMatrix& db, const CSRMatrix& queries, std::size_t kTop, int numThreads) {
@@ -496,6 +504,8 @@ int main (int argc, char **argv) {
         exit(1);
     }
 
+    std::string params = "k=" + std::to_string(kTop) + ", threads=" + std::to_string(numThreads);
+
     // ------------------------------------------------------------------------------
     // Load Corpus and Queries
     // ------------------------------------------------------------------------------
@@ -573,7 +583,7 @@ int main (int argc, char **argv) {
 			   kTop,
 			   static_cast<double>(retrieval.prepElapsedMs) / 1000.0,
 			   static_cast<double>(retrieval.elapsedMs) / 1000.0,
-			   "");
+			   params);
     std::cout << "Stored HDF5 results at: " << outputPath << '\n';
 
 
