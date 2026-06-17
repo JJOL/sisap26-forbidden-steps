@@ -12,7 +12,7 @@
 # 	-o main.exe
 main.exe:
 	mkdir -p build
-	clang++ -std=c++17 \
+	clang++ -O3 -std=c++17 \
 		-Xpreprocessor -fopenmp \
 		src/main.cpp \
 		-I/opt/homebrew/opt/libomp/include \

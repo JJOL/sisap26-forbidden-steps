@@ -15,7 +15,8 @@
 
 enum RetrievalStrategy {
     BRUTE_FORCE,
-    INVERTED_INDEX
+    INVERTED_INDEX,
+    BLOCKED_INVERTED_INDEX
 };
 
 using ScoreDoc = std::pair<float, int>;
@@ -55,6 +56,17 @@ struct InvertedIndex {
     long long terms; // number of terms
 };
 
+struct IVFBlock {
+    long long termStart;
+    long long termEnd;
+    // labels
+    float labelPercentilStart;
+    float labelPercentilEnd;
+    // postings for each term
+    std::vector<long long> termPostingsStart; // indptr for terms
+    std::vector<long long> termPostingsEnd; // indptr for terms
+};
+
 CSRMatrix loadCSRMatrixFromH5Group(const H5::Group &group) {
     CSRMatrix matrix;
 
@@ -83,6 +95,8 @@ RetrievalStrategy parseStrategy(const std::string& name) {
         return RetrievalStrategy::BRUTE_FORCE;
     } else if (name == "inverted") {
         return RetrievalStrategy::INVERTED_INDEX;
+    } else if (name == "blocked_inverted") {
+        return RetrievalStrategy::BLOCKED_INVERTED_INDEX;
     } else {
         throw std::runtime_error("Unknown strategy name: " + name);
     }
@@ -183,7 +197,7 @@ RetrievalResult runBruteForceRetrieval(const CSRMatrix& db, const CSRMatrix& que
                 topScores.push_back(item.first);
                 topIndices.push_back(item.second);
             }
-    
+
         }
     }
 
@@ -269,7 +283,7 @@ std::vector<ScoreDoc> topKScoredFromTouchedQuickselect(
                   }
                   return lhs.first > rhs.first;
               });
-    
+
     scored.resize(k);
     return scored;
 }
@@ -371,6 +385,226 @@ RetrievalResult runInvertedIndexRetrieval(const CSRMatrix& db, const CSRMatrix& 
     return result;
 }
 
+std::vector<IVFBlock> buildIVFBlocks(const InvertedIndex &index, const CSRMatrix &db, int numThreads) {
+    std::vector<IVFBlock> blocks;
+
+    const float termsResolution = 0.5; // this means blocks have 50% of the terms, so 2 blocks in the terms axis
+    const int numTermBlocks = (int)(1.0 / termsResolution); // 2 blocks for terms
+    const float postingsResolution = 0.5; // this means blocks have 50% of the postings, so 2 blocks in the postings axis
+    const int numPostingsBlocks = (int)(1.0 / postingsResolution); // 2 blocks for postings
+    // blocks.reserve(16); // at least 16 blocks
+
+    // For now, we will create blocks based on the number of terms. We will create 16 blocks with equal number of terms.
+    int numBlocks = numTermBlocks * numPostingsBlocks; // 4 blocks for terms and 4 blocks for postings, so 16 blocks in total
+
+    // print all info variables to verify numbers
+    std::cout << "Building IVF blocks with the following parameters:" << std::endl;
+    std::cout << "  termsResolution: " << termsResolution << std::endl;
+    std::cout << "  postingsResolution: " << postingsResolution << std::endl;
+    std::cout << "  numTermBlocks: " << numTermBlocks << std::endl;
+    std::cout << "  numPostingsBlocks: " << numPostingsBlocks << std::endl;
+    std::cout << "  numBlocks: " << numBlocks << std::endl;
+
+    for (int i = 0; i < numBlocks; i++) {
+        IVFBlock block;
+        int blockRow = i / numPostingsBlocks; // which block in the terms axis
+        int blockCol = i % numPostingsBlocks; // which block in the postings axis
+
+        std::cout << "Building block " << i << " (row: " << blockRow << ", col: " << blockCol << ")" << std::endl;
+        block.termStart = blockRow * termsResolution * index.terms;
+        block.termEnd = (blockRow + 1) * termsResolution * index.terms;
+
+        std::cout << "  termStart: " << block.termStart << std::endl;
+        std::cout << "  termEnd: " << block.termEnd << std::endl;
+
+        // percentils along the postings axis are 100%, 50%, 0%. Say we think of percentils as ranks better, so rank 0-50% is the best 50% of postings, and rank 50%-100% is the worst 50% of postings.
+        block.labelPercentilStart = blockCol * termsResolution;
+        block.labelPercentilEnd = (blockCol + 1) * termsResolution;
+
+        std::cout << "  labelPercentilStart: " << block.labelPercentilStart << std::endl;
+        std::cout << "  labelPercentilEnd: " << block.labelPercentilEnd << std::endl;
+
+        // For each term in the block, we will assign the start and end position (for docIds and docVals) of the index based on the ranks we cover
+        block.termPostingsStart.resize(block.termEnd - block.termStart);
+        block.termPostingsEnd.resize(block.termEnd - block.termStart);
+        for (int term = block.termStart; term < block.termEnd; term++) {
+            long long termPostingStart = index.termIndptr[term];
+            long long termPostingEnd = index.termIndptr[term + 1];
+            long long termPostingCount = termPostingEnd - termPostingStart;
+
+            // std::cout << "  term " << term << " postings: start=" << termPostingStart << ", end=" << termPostingEnd << ", count=" << termPostingCount << std::endl;
+
+            block.termPostingsStart[term - block.termStart] = termPostingStart + (long long)(block.labelPercentilStart * termPostingCount);
+            block.termPostingsEnd[term - block.termStart] = termPostingStart + (long long)(block.labelPercentilEnd * termPostingCount);
+        }
+
+        blocks.push_back(block);
+    }
+
+    return blocks;
+}
+
+long long findFirstQueryTermIndexInBlock(const std::vector<int>& queryTerms, long long qStart, long long qEnd, long long blockTermStart, long long blockTermEnd) {
+    // binary search the index of the first queryTerm queryTerms[tInd] that is >= blockTermStart and < blockTermEnd
+    // otherwise return qEnd (no query term in this block)
+    long long left = qStart;
+    long long right = qEnd - 1;
+
+    while (left <= right) {
+        long long mid = left + (right - left) / 2;
+        int term = queryTerms[mid];
+        if (term < blockTermStart) {
+            left = mid + 1;
+        } else if (term >= blockTermEnd) {
+            right = mid - 1;
+        } else {
+            // found a term in the block, but we want the first one, so continue searching to the left
+            right = mid - 1;
+        }
+    }
+
+    return left; // left is the index of the first query term that is >= blockTermStart and < blockTermEnd, or qEnd if none found
+}
+
+void searchBlockedTopKInvertedIndex(const InvertedIndex &index, const std::vector<IVFBlock> &blocks, const CSRMatrix &db, const CSRMatrix &queries, std::size_t kTop, int numThreads, RetrievalResult& result) {
+    omp_set_num_threads(numThreads);
+
+    #pragma omp parallel
+    {
+        std::vector<float> scores(db.rows, 0.0);
+        std::vector<unsigned int> seenStamp(db.rows, 0);
+        std::vector<int> touchedDocs;
+        touchedDocs.reserve(4096); // at least 4k touched (it goes beyond, about 90% which is 57k for the fiqa dataset)
+        unsigned int stamp = 1;
+
+        #pragma omp for schedule(dynamic, 200)
+        for (long long q = 0; q < 1; q++) {
+            touchedDocs.clear();
+            long long postingsVisitedForQuery = 0;
+            const long long qStart = queries.indptr[q];
+            const long long qEnd = queries.indptr[q + 1];
+
+            long long termIndex = qStart;
+            for (int i = 0; i < blocks.size(); i++) {
+                const IVFBlock& block = blocks[i];
+                long long tInd = findFirstQueryTermIndexInBlock(queries.indices, qStart, qEnd, block.termStart, block.termEnd);
+
+                std::cout << "Processing query " << (q + 1) << "/" << queries.rows
+                          << ", block " << (i) << "/" << blocks.size()
+                          << ", Found termIndex: " << tInd
+                          << ", Corresponds to term " << queries.indices[tInd]
+                          << ", block.termStart: " << block.termStart
+                          << ", block.termEnd: " << block.termEnd
+                          << std::endl;
+
+                while (tInd < block.termEnd && tInd < qEnd) {
+                    const int term = queries.indices[tInd];
+                    const float qVal = queries.data[tInd];
+
+                    const long long postStart = block.termPostingsStart[term - block.termStart];
+                    const long long postEnd = block.termPostingsEnd[term - block.termStart];
+                    postingsVisitedForQuery += (postEnd - postStart);
+
+                    for (long long pInd = postStart; pInd < postEnd; pInd++) {
+                        const int docId = index.docIds[pInd];
+                        const float docVal = index.docValues[pInd];
+                        if (seenStamp[docId] != stamp) {
+                            seenStamp[docId] = stamp;
+                            scores[docId] = 0.0F;
+                            touchedDocs.push_back(docId);
+                        }
+                        scores[docId] += qVal * docVal;
+                    }
+
+                    tInd++;
+                }
+            }
+
+
+            const std::vector<ScoreDoc> top = topKScoredFromTouchedQuickselect(touchedDocs, scores, kTop);
+            // make aliases for convenience
+            auto& topIndices = result.topIndicesByQuery[q];
+            auto& topScores = result.topScoresByQuery[q];
+            topIndices.reserve(top.size());
+            topScores.reserve(top.size());
+
+            // push top doc/vector rows indices and scores to the result
+            for (const ScoreDoc& item : top) {
+                topScores.push_back(item.first);
+                topIndices.push_back(item.second);
+            }
+
+            #pragma omp critical
+            {
+                result.totalPostingsVisited += postingsVisitedForQuery;
+                result.totalTouchedDocs += touchedDocs.size();
+                result.maxTouchedDocs = std::max(result.maxTouchedDocs, (long long)touchedDocs.size());
+                // if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
+                    std::cout << "Processed query " << (q + 1) << "/" << queries.rows
+                            << " (touched docs: " << touchedDocs.size()
+                            << ", postings visited: " << postingsVisitedForQuery << ")" << std::endl;
+                // }
+            }
+
+            // Update stamp for next query docs reset
+            stamp++;
+            if (stamp == 0U) {
+                std::fill(seenStamp.begin(), seenStamp.end(), 0U);
+                stamp = 1U;
+            }
+        }
+    } // End of OpenMP Block
+}
+
+RetrievalResult runBlockedInvertedIndexRetrieval(const CSRMatrix& db, const CSRMatrix& queries, std::size_t kTop, int numThreads) {
+    RetrievalResult result;
+    result.topIndicesByQuery.resize(queries.rows);
+    result.topScoresByQuery.resize(queries.rows);
+    result.queryCount = queries.rows;
+
+    Clock prepClock;
+    prepClock.start();
+    // build inverted index
+    auto invertedIndex = buildSimpleInvertedIndex(db, numThreads);
+    std::cout << "Inverted index built with " << invertedIndex.terms << " terms." << std::endl;
+    std::vector<IVFBlock> blocks = buildIVFBlocks(invertedIndex, db, numThreads);
+    std::cout << "IVF blocks built with " << blocks.size() << " blocks." << std::endl;
+    result.prepElapsedMs = prepClock.elapsedMs();
+
+    // verify all consecutive blocks for a term have coherent postings start and end. So block 0 and 1, are for same terms, so end-start of blocks should match
+    for (int row = 0; row < 2; row++) {
+        int bId = row * 2; // 2 blocks per row
+        const IVFBlock& blockA = blocks[bId];
+        const IVFBlock& blockB = blocks[bId + 1];
+        std::cout << "verifying block " << bId << " and block " << (bId + 1) << std::endl;
+        for (long long term = blockA.termStart; term < blockA.termEnd; term++) {
+            long long postingsAStart = blockA.termPostingsStart[term - blockA.termStart];
+            long long postingsAEnd = blockA.termPostingsEnd[term - blockA.termStart];
+            long long postingsBStart = blockB.termPostingsStart[term - blockB.termStart];
+            long long postingsBEnd = blockB.termPostingsEnd[term - blockB.termStart];
+            if (postingsAEnd != postingsBStart) {
+                throw std::runtime_error("Incoherent postings between blocks " + std::to_string(bId) + " and " + std::to_string(bId + 1) + " for term " + std::to_string(term) + ": postingsAEnd=" + std::to_string(postingsAEnd) + ", postingsBStart=" + std::to_string(postingsBStart));
+            }
+            if (postingsAStart != 0) {
+                throw std::runtime_error("Incoherent postings start for block " + std::to_string(bId) + " for term " + std::to_string(term) + ": postingsAStart=" + std::to_string(postingsAStart));
+            }
+            if (postingsBEnd != invertedIndex.termIndptr[term + 1]) {
+                throw std::runtime_error("Incoherent postings end for block " + std::to_string(bId + 1) + " for term " + std::to_string(term) + ": postingsBEnd=" + std::to_string(postingsBEnd) + ", expected=" + std::to_string(invertedIndex.termIndptr[term + 1]));
+            }
+        }
+    }
+
+
+    // do search
+    Clock searchClock;
+    searchClock.start();
+    searchBlockedTopKInvertedIndex(invertedIndex, blocks, db, queries, kTop, numThreads, result);
+    std::cout << "Blocked inverted index search completed." << std::endl;
+    result.elapsedMs = searchClock.elapsedMs();
+
+    return result;
+}
+
 RetrievalResult runRetrieval(const CSRMatrix &db, const CSRMatrix &queries, int kTop, RetrievalStrategy strategy, int numThreads) {
     RetrievalResult results;
     switch (strategy)
@@ -379,8 +613,11 @@ RetrievalResult runRetrieval(const CSRMatrix &db, const CSRMatrix &queries, int 
         results = runBruteForceRetrieval(db, queries, kTop, numThreads);
         break;
     case RetrievalStrategy::INVERTED_INDEX:
-        results = runInvertedIndexRetrieval(db, queries, kTop, numThreads);
-        break;
+    results = runInvertedIndexRetrieval(db, queries, kTop, numThreads);
+    break;
+    case RetrievalStrategy::BLOCKED_INVERTED_INDEX:
+    results = runBlockedInvertedIndexRetrieval(db, queries, kTop, numThreads);
+    break;
     default:
         throw std::runtime_error("Unknown retrieval strategy.");
     }
@@ -521,7 +758,7 @@ int main (int argc, char **argv) {
     H5::Group queriesGroup = file.openGroup("otest/queries");
     auto queries = loadCSRMatrixFromH5Group(queriesGroup);
 
-    auto durationMs = clk.elapsedMs(); 
+    auto durationMs = clk.elapsedMs();
 
     std::cout << "Train Matrix Shape: (" << db.rows << "," << db.cols << ")" << std::endl;
     std::cout << "Queries Matrix Shape: (" << queries.rows << "," << queries.cols << ")" << std::endl;
@@ -547,7 +784,7 @@ int main (int argc, char **argv) {
     if (strategy == RetrievalStrategy::BRUTE_FORCE) {
         std::cout << "Brute-force retrieval completed." << std::endl;
         std::cout << "Brute-force search time: " << retrieval.elapsedMs << " ms" << '\n';
-    } else if (strategy == RetrievalStrategy::INVERTED_INDEX) {
+    } else if (strategy == RetrievalStrategy::INVERTED_INDEX || strategy == RetrievalStrategy::BLOCKED_INVERTED_INDEX) {
         std::cout << "Inverted index retrieval completed." << std::endl;
         std::cout << "Inverted index build time: " << retrieval.prepElapsedMs << " ms" << '\n';
         std::cout << "Inverted-index search time: " << retrieval.elapsedMs << " ms" << '\n';
