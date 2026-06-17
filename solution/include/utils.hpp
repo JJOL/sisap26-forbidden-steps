@@ -95,6 +95,7 @@ void printUsage() {
     std::cout << "  --strategy       Retrieval strategy to use (e.g., brute-force, inverted-index, hnsw)" << std::endl;
     std::cout << "  --task           Task name (e.g., task3)" << std::endl;
     std::cout << "  --dataset        Dataset name (e.g., fiqa-dev)" << std::endl;
+    std::cout << "  --threads        Number of threads to use for parallel processing (default: 1), -1 for all available threads." << std::endl;
 }
 
 void printArguments(int argc, char **argv, const std::unordered_map<std::string, std::string> &argsMap) {
@@ -121,6 +122,7 @@ void parseArguments(int argc, char **argv, ArgumentsMap &argsMap) {
         {"--strategy", "strategy"},
         {"--task", "task"},
         {"--dataset", "dataset"},
+        {"--threads", "threads"},
         // Add more options as needed
     };
 

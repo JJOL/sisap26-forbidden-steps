@@ -6,9 +6,11 @@
 #include <stdexcept>
 #include <cstdlib>
 #include <cassert>
+#include <omp.h>
 #include "utils.hpp"
 
 #include <H5Cpp.h>
+
 
 enum RetrievalStrategy {
     BRUTE_FORCE,
@@ -134,7 +136,7 @@ std::vector<ScoreDoc> topKScoredQuickselect(const std::vector<float>& scores, in
 	return scored;
 }
 
-RetrievalResult runBruteForceRetrieval(const CSRMatrix& db, const CSRMatrix& queries, std::size_t kTop) {
+RetrievalResult runBruteForceRetrieval(const CSRMatrix& db, const CSRMatrix& queries, std::size_t kTop, int numThreads) {
 	Clock searchClock;
 	searchClock.start();
 
@@ -142,38 +144,50 @@ RetrievalResult runBruteForceRetrieval(const CSRMatrix& db, const CSRMatrix& que
 	result.topIndicesByQuery.resize(queries.rows);
 	result.topScoresByQuery.resize(queries.rows);
 
-	std::vector<float> scores(db.rows, 0.0F);
-	for (long long q = 0; q < queries.rows; ++q) {
-        if (q % 100 == 0 || q + 1 == queries.rows) {
-            std::cout << "Processing query " << (q + 1) << "/" << queries.rows << std::endl;
-        }
-		for (long long d = 0; d < db.rows; ++d) {
-			scores[d] = dotProductRows(db, d, queries, q);
-		}
-        // std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
-		const std::vector<ScoreDoc> top = topKScoredQuickselect(scores, kTop);
-        // const std::vector<ScoreDoc> top = std::vector<ScoreDoc>(queries.rows, std::make_pair(0.0F, 0));
-		auto& topIndices = result.topIndicesByQuery[q];
-		auto& topScores = result.topScoresByQuery[q];
-		topIndices.reserve(top.size());
-		topScores.reserve(top.size());
-		for (const ScoreDoc& item : top) {
-			topScores.push_back(item.first);
-			topIndices.push_back(item.second);
-		}
+    // set number of threads for OpenMP
+    omp_set_num_threads(numThreads);
+    #pragma omp parallel
+    {
+        std::vector<float> scores(db.rows, 0.0F);
 
-	}
+        #pragma omp for schedule(static, 200)
+        for (long long q = 0; q < queries.rows; ++q) {
+            if (q % 100 == 0 || q + 1 == queries.rows) {
+                #pragma omp critical
+                {
+                    std::cout << "Processing query " << (q + 1) << "/" << queries.rows << std::endl;
+                }
+            }
+
+            // openmp division of work is static or dynamic. By default, it is static. So each thread will get a chunk of queries to process.
+            for (long long d = 0; d < db.rows; ++d) {
+                scores[d] = dotProductRows(db, d, queries, q);
+            }
+            // std::cout << "Processed query " << (q + 1) << "/" << queries.rows << '\n';
+            const std::vector<ScoreDoc> top = topKScoredQuickselect(scores, kTop);
+            // const std::vector<ScoreDoc> top = std::vector<ScoreDoc>(queries.rows, std::make_pair(0.0F, 0));
+            auto& topIndices = result.topIndicesByQuery[q];
+            auto& topScores = result.topScoresByQuery[q];
+            topIndices.reserve(top.size());
+            topScores.reserve(top.size());
+            for (const ScoreDoc& item : top) {
+                topScores.push_back(item.first);
+                topIndices.push_back(item.second);
+            }
+    
+        }
+    }
 
 	result.elapsedMs = searchClock.elapsedMs();
 	return result;
 }
 
-RetrievalResult runRetrieval(const CSRMatrix &db, const CSRMatrix &queries, int kTop, RetrievalStrategy strategy) {
+RetrievalResult runRetrieval(const CSRMatrix &db, const CSRMatrix &queries, int kTop, RetrievalStrategy strategy, int numThreads) {
     RetrievalResult results;
     switch (strategy)
     {
     case RetrievalStrategy::BRUTE_FORCE:
-        results = runBruteForceRetrieval(db, queries, kTop);
+        results = runBruteForceRetrieval(db, queries, kTop, numThreads);
         break;
     default:
         throw std::runtime_error("Unknown retrieval strategy.");
@@ -290,6 +304,13 @@ int main (int argc, char **argv) {
     std::string taskName = argsMap["task"];
     std::string outputPath = argsMap["outputFolder"] + "/" + taskName + "_" + datasetName + "_k=" + std::to_string(kTop) + argsMap["strategy"] +  ".h5";
     RetrievalStrategy strategy = parseStrategy(argsMap["strategy"]);
+    int numThreads = std::stoi(argsMap["threads"]);
+    if (numThreads == -1) {
+        numThreads = omp_get_max_threads();
+    } else if (numThreads == 0 || numThreads < -1) {
+        std::cerr << "Invalid number of threads specified: " << numThreads << ". Must be -1 or a positive integer." << std::endl;
+        exit(1);
+    }
 
     // ------------------------------------------------------------------------------
     // Load Corpus and Queries
@@ -316,12 +337,13 @@ int main (int argc, char **argv) {
         throw std::runtime_error("Train and queries column dimension must match.");
     }
 
-    
+    std::cout << "Running retrieval with strategy: " << argsMap["strategy"] << std::endl;
+    std::cout << "Configured to use " << numThreads << " threads for parallel processing." << std::endl;
     // ------------------------------------------------------------------------------
     // Process Queries
     // ------------------------------------------------------------------------------
     // RetrievalResult retrieval;
-    auto retrieval = runRetrieval(db, queries, kTop, strategy);
+    auto retrieval = runRetrieval(db, queries, kTop, strategy, numThreads);
 
     // ------------------------------------------------------------------------------
     // Print Results
