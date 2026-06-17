@@ -14,6 +14,8 @@
 #         sisap-baseline python search.py --input data/task-$task-spot-check/*.h5 --task-description data/task-$task-spot-check/config.json --output results/task-$task-spot-check/
 # done
 
+docker build -t cpp-hdf5:latest .
+
 for task in 3; do
     echo Running Task $task
     mkdir -p results/task-$task-spot-check
@@ -26,5 +28,5 @@ for task in 3; do
         --memory-swappiness 0 \
         --volume $(pwd)/data:/app/data:ro \
         --volume $(pwd)/results:/app/results:rw \
-        sisap-own ./build/own_main.exe --inputFolder data/fiqa-dev --outputFolder results/task-3-spot-check --strategy inverted --kTop 30 --task task3 --dataset fiqa-dev
+        cpp-hdf5 ./build/main.exe --inputFolder data/fiqa-dev --outputFolder results/task-3-spot-check --strategy inverted --kTop 30 --task task3 --dataset fiqa-dev  --threads -1
 done
