@@ -1,4 +1,5 @@
 #include <iostream>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <array>
@@ -44,6 +45,14 @@ struct CSRMatrix {
 
     long long rows;
     long long cols; // although int would work and corresponds to indices type
+};
+
+// Similar to CSRMatrix but with names for inverted index representation
+struct InvertedIndex {
+    std::vector<long long> termIndptr; // indptr for terms
+    std::vector<int> docIds; // indices for documents
+    std::vector<float> docValues; // data for documents
+    long long terms; // number of terms
 };
 
 CSRMatrix loadCSRMatrixFromH5Group(const H5::Group &group) {
@@ -182,12 +191,187 @@ RetrievalResult runBruteForceRetrieval(const CSRMatrix& db, const CSRMatrix& que
 	return result;
 }
 
+InvertedIndex buildSimpleInvertedIndex(const CSRMatrix &db, int numThreads) {
+    InvertedIndex index;
+    index.terms = db.cols;
+    index.termIndptr.assign(db.cols + 1, 0);
+
+    // Count the number of postings for each term, to "relative" offset the "next" term offset in the indptr array.
+    // For now termIndptr[i+1] represents the distance to termIndptr[i].
+    for (int term : db.indices) {
+        if (term < 0 || term >= index.terms) {
+            throw std::runtime_error("Term index out of bounds in database: " + std::to_string(term));
+        }
+        index.termIndptr[term + 1]++;
+    }
+
+    // From left to right, Offset each termIndptr by summing the previous to calculate an absolute offset.
+    for (int i = 1; i < index.termIndptr.size(); i++) {
+        index.termIndptr[i] += index.termIndptr[i - 1];
+    }
+
+    index.docIds.assign(db.indices.size(), 0);
+    index.docValues.assign(db.data.size(), 0.0F);
+    // nextWrite is a copy of termIndptr, it will change to be able to provide next positions to write.
+    std::vector<long long> nextWrite = index.termIndptr;
+    for (long long row = 0; row < db.rows; row++) {
+        const long long rowStart = db.indptr[row];
+        const long long rowEnd = db.indptr[row + 1];
+        for (long long p = rowStart; p < rowEnd; p++) {
+            const int term = db.indices[p];
+            const float value = db.data[p];
+            const long long writePos = nextWrite[term]++; // get next and increment for to point to next
+            index.docIds[writePos] = (int)(row);
+            index.docValues[writePos] = value;
+        }
+    }
+
+    return index;
+}
+
+std::vector<ScoreDoc> topKScoredFromTouchedQuickselect(
+    const std::vector<int>& touchedDocs,
+    const std::vector<float>& scores,
+    std::size_t k) {
+
+    std::vector<ScoreDoc> scored;
+    // first all scores from touchedDocs
+    scored.reserve(touchedDocs.size());
+    for (int docId : touchedDocs) {
+        scored.emplace_back(scores[docId], docId);
+    }
+
+    k = std::min(k, scored.size());
+    if (k == 0) {
+        return {};
+    }
+
+    auto scoredPtrDiff = static_cast<std::ptrdiff_t>(k);
+
+    // if more than k scores, partition putting the top k in the first k postions,
+    if (k < scored.size()) {
+        std::nth_element(scored.begin(), scored.begin() + scoredPtrDiff, scored.end(),
+                        [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
+                            // if same scores, order by docId ascending
+                            if (lhs.first == rhs.first) {
+                                return lhs.second < rhs.second;
+                            }
+                            // else order by score descending
+                            return lhs.first > rhs.first;
+                        });
+    }
+
+    // sort the top k scores in descending order, and if same score, by docId ascending
+    std::sort(scored.begin(), scored.begin() + scoredPtrDiff,
+              [](const ScoreDoc& lhs, const ScoreDoc& rhs) {
+                  if (lhs.first == rhs.first) {
+                      return lhs.second < rhs.second;
+                  }
+                  return lhs.first > rhs.first;
+              });
+    
+    scored.resize(k);
+    return scored;
+}
+
+void searchTopKInvertedIndex(const InvertedIndex &index, const CSRMatrix &db, const CSRMatrix &queries, std::size_t kTop, int numThreads, RetrievalResult& result) {
+
+    std::vector<float> scores(db.rows, 0.0);
+    std::vector<unsigned int> seenStamp(db.rows, 0);
+    std::vector<int> touchedDocs;
+    touchedDocs.reserve(4096); // at least 4k touched (it goes beyond, about 90% which is 57k for the fiqa dataset)
+    unsigned int stamp = 1;
+
+    for (long long q = 0; q < queries.rows; q++) {
+        touchedDocs.clear();
+        long long postingsVisitedForQuery = 0;
+        const long long qStart = queries.indptr[q];
+        const long long qEnd = queries.indptr[q + 1];
+
+        for (long long tInd = qStart; tInd < qEnd; tInd++) {
+            const int term = queries.indices[tInd];
+            if (term < 0 || term >= index.terms) {
+                throw std::runtime_error("Term index out of bounds in query: " + std::to_string(term));
+            }
+
+            const float qVal = queries.data[tInd];
+
+            const long long postStart = index.termIndptr[term];
+            const long long postEnd = index.termIndptr[term + 1];
+            postingsVisitedForQuery += (postEnd - postStart);
+
+            for (long long pInd = postStart; pInd < postEnd; pInd++) {
+                const int docId = index.docIds[pInd];
+                if (seenStamp[docId] != stamp) {
+                    seenStamp[docId] = stamp;
+                    scores[docId] = 0.0F;
+                    touchedDocs.push_back(docId);
+                }
+                scores[docId] += qVal * index.docValues[pInd];
+            }
+        }
+
+        const std::vector<ScoreDoc> top = topKScoredFromTouchedQuickselect(touchedDocs, scores, kTop);
+        // make aliases for convenience
+        auto& topIndices = result.topIndicesByQuery[q];
+        auto& topScores = result.topScoresByQuery[q];
+        topIndices.reserve(top.size());
+        topScores.reserve(top.size());
+
+        // push top doc/vector rows indices and scores to the result
+        for (const ScoreDoc& item : top) {
+            topScores.push_back(item.first);
+            topIndices.push_back(item.second);
+        }
+
+        result.totalPostingsVisited += postingsVisitedForQuery;
+        result.totalTouchedDocs += touchedDocs.size();
+        result.maxTouchedDocs = std::max(result.maxTouchedDocs, (long long)touchedDocs.size());
+        if ((q + 1) % 100 == 0 || q + 1 == queries.rows) {
+            std::cout << "Processed query " << (q + 1) << "/" << queries.rows
+                      << " (touched docs: " << touchedDocs.size()
+                      << ", postings visited: " << postingsVisitedForQuery << ")" << std::endl;
+        }
+
+        // Update stamp for next query docs reset
+        stamp++;
+        if (stamp == 0U) {
+            std::fill(seenStamp.begin(), seenStamp.end(), 0U);
+            stamp = 1U;
+        }
+    }
+}
+
+RetrievalResult runInvertedIndexRetrieval(const CSRMatrix& db, const CSRMatrix& queries, std::size_t kTop, int numThreads) {
+    RetrievalResult result;
+    result.topIndicesByQuery.resize(queries.rows);
+    result.topScoresByQuery.resize(queries.rows);
+    result.queryCount = queries.rows;
+
+    Clock prepClock;
+    prepClock.start();
+    // build inverted index
+    auto invertedIndex = buildSimpleInvertedIndex(db, numThreads);
+    result.prepElapsedMs = prepClock.elapsedMs();
+
+    // do search
+    Clock searchClock;
+    searchClock.start();
+    searchTopKInvertedIndex(invertedIndex, db, queries, kTop, numThreads, result);
+    result.elapsedMs = searchClock.elapsedMs();
+
+    return result;
+}
+
 RetrievalResult runRetrieval(const CSRMatrix &db, const CSRMatrix &queries, int kTop, RetrievalStrategy strategy, int numThreads) {
     RetrievalResult results;
     switch (strategy)
     {
     case RetrievalStrategy::BRUTE_FORCE:
         results = runBruteForceRetrieval(db, queries, kTop, numThreads);
+        break;
+    case RetrievalStrategy::INVERTED_INDEX:
+        results = runInvertedIndexRetrieval(db, queries, kTop, numThreads);
         break;
     default:
         throw std::runtime_error("Unknown retrieval strategy.");
@@ -382,7 +566,7 @@ int main (int argc, char **argv) {
     // Store Results
     // ------------------------------------------------------------------------------
     storeResults(outputPath,
-			   "brute-cpp",
+			   argsMap["strategy"],
 			   datasetName,
 			   taskName,
 			   retrieval,
@@ -390,7 +574,7 @@ int main (int argc, char **argv) {
 			   static_cast<double>(retrieval.prepElapsedMs) / 1000.0,
 			   static_cast<double>(retrieval.elapsedMs) / 1000.0,
 			   "");
-		std::cout << "Stored HDF5 results at: " << outputPath << '\n';
+    std::cout << "Stored HDF5 results at: " << outputPath << '\n';
 
 
     return 0;
