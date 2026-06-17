@@ -1134,8 +1134,10 @@ int main(int argc, char** argv) {
 
 		if (!retrieval.topIndicesByQuery.empty()) {
 			std::cout << "First query top-" << kTop << " indices:";
-			for (int idx : retrieval.topIndicesByQuery.front()) {
-				std::cout << ' ' << idx;
+			auto firstQueryTopKIndices = retrieval.topIndicesByQuery.front();
+			auto firstQueryTopKScores = retrieval.topScoresByQuery.front();
+			for (int i = 0; i < firstQueryTopKIndices.size(); i++) {
+				std::cout << ' ' << firstQueryTopKIndices[i] << "," << firstQueryTopKScores[i] << ";";
 			}
 			std::cout << '\n';
 		}

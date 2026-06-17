@@ -179,3 +179,16 @@ std::string getInputFilePath(std::string inputPath) {
     }
     return inputPath;
 }
+
+void writeStringAttribute(H5::H5File& file, const std::string& name, const std::string& value) {
+	const H5::StrType strType(H5::PredType::C_S1, H5T_VARIABLE);
+	const H5::DataSpace scalarSpace(H5S_SCALAR);
+	H5::Attribute attr = file.createAttribute(name, strType, scalarSpace);
+	attr.write(strType, value);
+}
+
+void writeDoubleAttribute(H5::H5File& file, const std::string& name, double value) {
+	const H5::DataSpace scalarSpace(H5S_SCALAR);
+	H5::Attribute attr = file.createAttribute(name, H5::PredType::NATIVE_DOUBLE, scalarSpace);
+	attr.write(H5::PredType::NATIVE_DOUBLE, &value);
+}
