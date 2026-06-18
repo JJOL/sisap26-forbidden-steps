@@ -388,14 +388,14 @@ RetrievalResult runInvertedIndexRetrieval(const CSRMatrix& db, const CSRMatrix& 
 std::vector<IVFBlock> buildIVFBlocks(const InvertedIndex &index, const CSRMatrix &db, int numThreads) {
     std::vector<IVFBlock> blocks;
 
-    const float termsResolution = 0.5; // this means blocks have 50% of the terms, so 2 blocks in the terms axis
-    const int numTermBlocks = (int)(1.0 / termsResolution); // 2 blocks for terms
-    const float postingsResolution = 0.5; // this means blocks have 50% of the postings, so 2 blocks in the postings axis
-    const int numPostingsBlocks = (int)(1.0 / postingsResolution); // 2 blocks for postings
+    const float termsResolution = 0.1; // this means blocks have 10% of the terms, so 10 blocks in the terms axis
+    const int numTermBlocks = (int)(1.0 / termsResolution); // 10 blocks for terms
+    const float postingsResolution = 0.1; // this means blocks have 10% of the postings, so 10 blocks in the postings axis
+    const int numPostingsBlocks = (int)(1.0 / postingsResolution); // 10 blocks for postings
     // blocks.reserve(16); // at least 16 blocks
 
-    // For now, we will create blocks based on the number of terms. We will create 16 blocks with equal number of terms.
-    int numBlocks = numTermBlocks * numPostingsBlocks; // 4 blocks for terms and 4 blocks for postings, so 16 blocks in total
+    // For now, we will create blocks based on the number of terms. We will create 100 blocks with equal number of terms.
+    int numBlocks = numTermBlocks * numPostingsBlocks; // 10 blocks for terms and 10 blocks for postings, so 100 blocks in total
 
     // print all info variables to verify numbers
     std::cout << "Building IVF blocks with the following parameters:" << std::endl;
@@ -469,6 +469,17 @@ long long findFirstQueryTermIndexInBlock(const std::vector<int>& queryTerms, lon
 void searchBlockedTopKInvertedIndex(const InvertedIndex &index, const std::vector<IVFBlock> &blocks, const CSRMatrix &db, const CSRMatrix &queries, std::size_t kTop, int numThreads, RetrievalResult& result) {
     omp_set_num_threads(numThreads);
 
+
+    // std::vector<int> dummyIndices = {0, 12, 22, 23, 34, 36, 600, 607, 8990, 9000}; // dummy indices for testing
+    // long long dummyStart = 0;
+    // long long dummyEnd = 5;
+    // long long dummyBlockTermStart = 15;
+    // long long dummyBlockTermEnd = 25;
+    // std::cout << "Testing findFirstQueryTermIndexInBlock with dummy data..." << std::endl;
+    // std::cout << "Expected result: 12" << std::endl;
+    // long long bs = findFirstQueryTermIndexInBlock(dummyIndices, dummyStart, dummyEnd, dummyBlockTermStart, dummyBlockTermEnd);
+    // std::cout << "Actual result: " << bs << std::endl;
+    // assert(bs == 12);
     #pragma omp parallel
     {
         std::vector<float> scores(db.rows, 0.0);
@@ -478,31 +489,38 @@ void searchBlockedTopKInvertedIndex(const InvertedIndex &index, const std::vecto
         unsigned int stamp = 1;
 
         #pragma omp for schedule(dynamic, 200)
-        for (long long q = 0; q < 1; q++) {
+        for (long long q = 0; q < queries.rows; q++) {
             touchedDocs.clear();
             long long postingsVisitedForQuery = 0;
             const long long qStart = queries.indptr[q];
             const long long qEnd = queries.indptr[q + 1];
 
-            long long termIndex = qStart;
+            // print the queries.indices[t] for t in range qStart to qEnd
+            // for(int t = qStart; t < qEnd; t++) {
+            //     std::cout << "Query " << q << ", term index " << t << ": " << queries.indices[t] << std::endl;
+            // }
+
+            // long long termIndex = qStart;
             for (int i = 0; i < blocks.size(); i++) {
                 const IVFBlock& block = blocks[i];
                 long long tInd = findFirstQueryTermIndexInBlock(queries.indices, qStart, qEnd, block.termStart, block.termEnd);
 
-                std::cout << "Processing query " << (q + 1) << "/" << queries.rows
-                          << ", block " << (i) << "/" << blocks.size()
-                          << ", Found termIndex: " << tInd
-                          << ", Corresponds to term " << queries.indices[tInd]
-                          << ", block.termStart: " << block.termStart
-                          << ", block.termEnd: " << block.termEnd
-                          << std::endl;
+                // std::cout << "Processing query " << (q + 1) << "/" << queries.rows
+                //           << ", block " << (i) << "/" << blocks.size()
+                //           << ", Found termIndex: " << tInd
+                //           << ", Corresponds to term " << queries.indices[tInd]
+                //           << ", block.termStart: " << block.termStart
+                //           << ", block.termEnd: " << block.termEnd
+                //           << std::endl;
 
-                while (tInd < block.termEnd && tInd < qEnd) {
+                while (queries.indices[tInd] < block.termEnd && tInd < qEnd) {
                     const int term = queries.indices[tInd];
                     const float qVal = queries.data[tInd];
+                    // std::cout << "  Processing valid term " << term << " with query value " << qVal << std::endl;
 
                     const long long postStart = block.termPostingsStart[term - block.termStart];
                     const long long postEnd = block.termPostingsEnd[term - block.termStart];
+                    // std::cout << "Computing postings for term " << term << ": postStart=" << postStart << ", postEnd=" << postEnd << std::endl;
                     postingsVisitedForQuery += (postEnd - postStart);
 
                     for (long long pInd = postStart; pInd < postEnd; pInd++) {
@@ -572,27 +590,30 @@ RetrievalResult runBlockedInvertedIndexRetrieval(const CSRMatrix& db, const CSRM
     result.prepElapsedMs = prepClock.elapsedMs();
 
     // verify all consecutive blocks for a term have coherent postings start and end. So block 0 and 1, are for same terms, so end-start of blocks should match
-    for (int row = 0; row < 2; row++) {
-        int bId = row * 2; // 2 blocks per row
-        const IVFBlock& blockA = blocks[bId];
-        const IVFBlock& blockB = blocks[bId + 1];
-        std::cout << "verifying block " << bId << " and block " << (bId + 1) << std::endl;
-        for (long long term = blockA.termStart; term < blockA.termEnd; term++) {
-            long long postingsAStart = blockA.termPostingsStart[term - blockA.termStart];
-            long long postingsAEnd = blockA.termPostingsEnd[term - blockA.termStart];
-            long long postingsBStart = blockB.termPostingsStart[term - blockB.termStart];
-            long long postingsBEnd = blockB.termPostingsEnd[term - blockB.termStart];
-            if (postingsAEnd != postingsBStart) {
-                throw std::runtime_error("Incoherent postings between blocks " + std::to_string(bId) + " and " + std::to_string(bId + 1) + " for term " + std::to_string(term) + ": postingsAEnd=" + std::to_string(postingsAEnd) + ", postingsBStart=" + std::to_string(postingsBStart));
-            }
-            if (postingsAStart != 0) {
-                throw std::runtime_error("Incoherent postings start for block " + std::to_string(bId) + " for term " + std::to_string(term) + ": postingsAStart=" + std::to_string(postingsAStart));
-            }
-            if (postingsBEnd != invertedIndex.termIndptr[term + 1]) {
-                throw std::runtime_error("Incoherent postings end for block " + std::to_string(bId + 1) + " for term " + std::to_string(term) + ": postingsBEnd=" + std::to_string(postingsBEnd) + ", expected=" + std::to_string(invertedIndex.termIndptr[term + 1]));
-            }
-        }
-    }
+    // for (int row = 0; row < 2; row++) {
+    //     int bId = row * 2; // 2 blocks per row
+    //     const IVFBlock& blockA = blocks[bId];
+    //     const IVFBlock& blockB = blocks[bId + 1];
+    //     std::cout << "verifying block " << bId << " and block " << (bId + 1) << std::endl;
+    //     for (long long term = blockA.termStart; term < blockA.termEnd; term++) {
+    //         long long postingsAStart = blockA.termPostingsStart[term - blockA.termStart];
+    //         long long postingsAEnd = blockA.termPostingsEnd[term - blockA.termStart];
+    //         long long postingsBStart = blockB.termPostingsStart[term - blockB.termStart];
+    //         long long postingsBEnd = blockB.termPostingsEnd[term - blockB.termStart];
+
+    //         // check postingsStart and postingsEnd of terms 999, 1000, 1001, 1002
+    //         if (term >= 1062 && term <= 1068 || term == 20000) {
+    //             std::cout << "Term " << term << ": postingsAStart=" << postingsAStart << ", postingsAEnd=" << postingsAEnd
+    //                       << ", postingsBStart=" << postingsBStart << ", postingsBEnd=" << postingsBEnd
+    //                       << ", invertedIndex.termIndptr[term]=" << invertedIndex.termIndptr[term]
+    //                       << ", invertedIndex.termIndptr[term + 1]=" << invertedIndex.termIndptr[term + 1]
+    //                       << std::endl;
+    //         }
+    //         if (postingsAEnd != postingsBStart) {
+    //             throw std::runtime_error("Incoherent postings between blocks " + std::to_string(bId) + " and " + std::to_string(bId + 1) + " for term " + std::to_string(term) + ": postingsAEnd=" + std::to_string(postingsAEnd) + ", postingsBStart=" + std::to_string(postingsBStart));
+    //         }
+    //     }
+    // }
 
 
     // do search
