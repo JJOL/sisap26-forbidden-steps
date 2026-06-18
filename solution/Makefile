@@ -27,6 +27,6 @@ clean:
 	rm -rf build
 
 test: main.exe
-	./build/main.exe --inputFolder ../data/fiqa-dev --outputFolder ../results/task-3-spot-check --strategy blocked_inverted --kTop 30 --task task3 --dataset fiqa-dev --threads 1
+	./build/main.exe --inputFolder ../data/nq --outputFolder ../results/task-3-spot-check --strategy blocked_inverted --kTop 30 --task task3 --dataset fiqa-dev --threads 10
 
 all: main.exe
