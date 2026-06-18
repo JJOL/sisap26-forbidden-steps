@@ -603,6 +603,16 @@ void searchBlockedTopKInvertedIndex(const InvertedIndex &index, const std::vecto
     // long long bs = findFirstQueryTermIndexInBlock(dummyIndices, dummyStart, dummyEnd, dummyBlockTermStart, dummyBlockTermEnd);
     // std::cout << "Actual result: " << bs << std::endl;
     // assert(bs == 12);
+    std::vector<int> blockIndices;
+    blockIndices.clear();
+    blockIndices.reserve(100);
+    for (int b = 0; b < 10; b++) {
+        for (int l = 0; l < 5; l++) {
+            blockIndices.push_back(b * 10 + l);
+            if (l == 4 && b < 2) blockIndices.push_back(b * 10 + l + 1); // add the 6th block for the first two rows of blocks 
+        }
+    }
+    std::cout << "# of block indices: " << blockIndices.size() << std::endl;
     #pragma omp parallel
     {
         std::vector<float> scores(db.rows, 0.0);
@@ -610,7 +620,6 @@ void searchBlockedTopKInvertedIndex(const InvertedIndex &index, const std::vecto
         std::vector<int> touchedDocs;
         touchedDocs.reserve(4096); // at least 4k touched (it goes beyond, about 90% which is 57k for the fiqa dataset)
         unsigned int stamp = 1;
-        std::vector<int> blockIndices;
 
         #pragma omp for schedule(dynamic, 200)
         for (long long q = 0; q < queries.rows; q++) {
@@ -625,32 +634,32 @@ void searchBlockedTopKInvertedIndex(const InvertedIndex &index, const std::vecto
             // }
 
             // long long termIndex = qStart;
-            setBlockPrioritiesForQuery(queries, qStart, qEnd, blocks, blockIndices);
-            // blockIndices.clear();
-            // blockIndices.reserve(100);
-            // for (int l = 0; l < 3; l++) {
-            //     for (int b = 0; b < 10; b++) {
-            //         blockIndices.push_back(b * 10 + l);
-            //     }
-            // }
+            // setBlockPrioritiesForQuery(queries, qStart, qEnd, blocks, blockIndices);
+            
             // blockIndices.push_back(80);
             // std::cout << "# blocks: " << blocks.size() << ", # blockIndices: " << blockIndices.size() << std::endl;
             // assert(blockIndices.size() == blocks.size());
-            for (int pi = 0; pi < 40; pi++) {
+            long long prevTermStart = -1, prevTermEnd = -1;
+            long long firstTermInRange = qEnd;
+            for (int pi = 0; pi < blockIndices.size(); pi++) {
             // for (int i : blockIndices) {
             // for (int i = 0; i < blocks.size(); i++) {
                 const IVFBlock& block = blocks[blockIndices[pi]];
-                long long tInd = findFirstQueryTermIndexInBlock(queries.indices, qStart, qEnd, block.termStart, block.termEnd);
-
+                if (block.termStart != prevTermStart || block.termEnd != prevTermEnd) {
+                    firstTermInRange = findFirstQueryTermIndexInBlock(queries.indices, qStart, qEnd, block.termStart, block.termEnd);
+                    prevTermStart = block.termStart;
+                    prevTermEnd = block.termEnd;
+                }
+                long long tInd = firstTermInRange;
                 // std::cout << "Processing query " << (q + 1) << "/" << queries.rows
-                //           << ", block " << (i) << "/" << blocks.size()
+                //           << ", block " << (pi) << "/" << blockIndices.size()
                 //           << ", Found termIndex: " << tInd
                 //           << ", Corresponds to term " << queries.indices[tInd]
                 //           << ", block.termStart: " << block.termStart
                 //           << ", block.termEnd: " << block.termEnd
                 //           << std::endl;
 
-                while (queries.indices[tInd] < block.termEnd && tInd < qEnd) {
+                while (tInd < qEnd && queries.indices[tInd] < block.termEnd) {
                     const int term = queries.indices[tInd];
                     const float qVal = queries.data[tInd];
                     // std::cout << "  Processing valid term " << term << " with query value " << qVal << std::endl;
