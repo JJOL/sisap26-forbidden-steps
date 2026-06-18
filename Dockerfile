@@ -1,4 +1,6 @@
+
 FROM ubuntu:20.04
+ARG H5_LIB_PATH="/usr/lib/x86_64-linux-gnu/hdf5/serial/"
 
 WORKDIR /app
 
@@ -20,7 +22,7 @@ RUN c++ -std=c++17 -O3 \
        -I/usr/include/hdf5/serial \
        -Iinclude \
        src/main.cpp -o build/main.exe \
-       -L/usr/lib/aarch64-linux-gnu/hdf5/serial/ \
+       -L${H5_LIB_PATH} \
        -lhdf5_cpp -lhdf5
 
 # docker build -t cpp-hdf5:latest .

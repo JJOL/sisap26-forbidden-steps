@@ -506,7 +506,6 @@ int main (int argc, char **argv) {
 
     std::cout << "Using dataset: " << datasetName << std::endl;
     std::cout << "Using task: " << taskName << std::endl;
-    return 0;
 
     std::string params = "k=" + std::to_string(kTop) + ", threads=" + std::to_string(numThreads);
 

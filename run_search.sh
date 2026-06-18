@@ -14,7 +14,7 @@
 #         sisap-baseline python search.py --input data/task-$task-spot-check/*.h5 --task-description data/task-$task-spot-check/config.json --output results/task-$task-spot-check/
 # done
 
-docker build -t cpp-hdf5:latest .
+docker build --build-arg H5_LIB_PATH="/usr/lib/aarch64-linux-gnu/hdf5/serial/" -t cpp-hdf5:latest .
 
 for task in 3; do
     echo Running Task $task
