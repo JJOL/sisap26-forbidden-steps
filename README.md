@@ -3,6 +3,8 @@
 This repository is a fork of the working example for the SISAP 2026 Indexing Challenge <https://sisap-challenges.github.io/>, working with Python and GitHub Actions.
 
 Here you can find the forbidden-inv, a multi-threaded C++ implementation of Inverted File Indexes (IVF) to the SISAP-2026 Task 3 Challenge.
+A variation of it that uses blocked-searching on the index is implemented. While it cuts the need to compute 50% of the postingElements, it's new overhead penalizes the overall time.
+
 To run it execute:
 ```bash
 chmod +x ./run_search.sh
