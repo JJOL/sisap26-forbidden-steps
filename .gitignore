@@ -3,3 +3,5 @@ data/
 results/
 venv/
 __pycache__/
+.vscode/
+*.csv

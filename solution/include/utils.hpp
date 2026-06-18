@@ -68,6 +68,9 @@ std::vector<T> get1DDataset(const H5::Group &group, const std::string &datasetNa
 
 std::string findStringFieldInJson(std::ifstream& jsonFile, const std::string& fieldName, const std::string& errorMsg) {
 	std::string line;
+    // reset the file stream to the beginning
+    jsonFile.clear();
+    jsonFile.seekg(0, std::ios::beg);
 	while (std::getline(jsonFile, line)) {
 		const std::size_t fieldPos = line.find('"' + fieldName + '"');
 		if (fieldPos != std::string::npos) {
@@ -155,7 +158,7 @@ void parseArguments(int argc, char **argv, ArgumentsMap &argsMap) {
 }
 
 
-std::string getInputFilePath(std::string inputPath) {
+std::string getInputFilePath(std::string inputPath, std::string &datasetName, std::string &taskName) {
     if (std::filesystem::path(inputPath).extension() == ".h5") {
         std::cout << "Using input file: " << inputPath << '\n';
     } else {
@@ -178,6 +181,12 @@ std::string getInputFilePath(std::string inputPath) {
         }
         std::cout << "Using H5 file from config: " << h5Path << '\n';
         inputPath = h5Path.string();
+
+        // modify datasetName and taskName based on config.json
+        std::string datasetNameFromConfig = findStringFieldInJson(configFile, "dataset_name", "Dataset name not specified in config");
+        std::string taskNameFromConfig = findStringFieldInJson(configFile, "task", "Task name not specified in config");
+        datasetName = datasetNameFromConfig;
+        taskName = taskNameFromConfig;
     }
     return inputPath;
 }

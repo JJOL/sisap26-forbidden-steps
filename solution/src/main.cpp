@@ -727,10 +727,10 @@ int main (int argc, char **argv) {
         std::cout << key << ": " << value << std::endl;
     }
 
-    std::string filePath = getInputFilePath(argsMap["inputFolder"]);
     int kTop = std::stoi(argsMap["kTop"]);
     std::string datasetName = argsMap["dataset"];
     std::string taskName = argsMap["task"];
+    std::string filePath = getInputFilePath(argsMap["inputFolder"], datasetName, taskName);
     std::string outputPath = argsMap["outputFolder"] + "/" + taskName + "_" + datasetName + "_k=" + std::to_string(kTop) + argsMap["strategy"] +  ".h5";
     RetrievalStrategy strategy = parseStrategy(argsMap["strategy"]);
     int numThreads = std::stoi(argsMap["threads"]);
@@ -740,6 +740,9 @@ int main (int argc, char **argv) {
         std::cerr << "Invalid number of threads specified: " << numThreads << ". Must be -1 or a positive integer." << std::endl;
         exit(1);
     }
+
+    std::cout << "Using dataset: " << datasetName << std::endl;
+    std::cout << "Using task: " << taskName << std::endl;
 
     std::string params = "k=" + std::to_string(kTop) + ", threads=" + std::to_string(numThreads);
 

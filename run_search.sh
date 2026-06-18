@@ -1,3 +1,21 @@
+# for task in 1 2 3; do
+#     echo Running Task $task
+#     mkdir -p results/task-$task-spot-check
+#     docker run \
+#         --rm \
+#         --user "$(id -u):$(id -g)" \
+#         --cpus=4 \
+#         --memory=16g \
+#         --memory-swap=16g \
+#         --memory-swappiness 0 \
+#         --volume $(pwd)/search.py:/app/search.py:ro \
+#         --volume $(pwd)/data:/app/data:ro \
+#         --volume $(pwd)/results:/app/results:rw \
+#         sisap-baseline python search.py --input data/task-$task-spot-check/*.h5 --task-description data/task-$task-spot-check/config.json --output results/task-$task-spot-check/
+# done
+
+docker build --build-arg H5_LIB_PATH="/usr/lib/aarch64-linux-gnu/hdf5/serial/" -t cpp-hdf5:latest .
+
 for task in 3; do
     echo Running Task $task
     mkdir -p results/task-$task-spot-check
@@ -11,20 +29,5 @@ for task in 3; do
         --volume $(pwd)/search.py:/app/search.py:ro \
         --volume $(pwd)/data:/app/data:ro \
         --volume $(pwd)/results:/app/results:rw \
-        sisap-baseline python search.py --input data/fiqa-dev/*.h5 --task-description data/fiqa-dev/config.json --output results/task-$task-spot-check/
+        cpp-hdf5 ./build/main.exe --inputFolder data/fiqa-dev --outputFolder results/task-3-spot-check --strategy inverted --kTop 30 --task task3 --dataset fiqa-dev  --threads -1
 done
-
-# for task in 3; do
-#     echo Running Task $task
-#     mkdir -p results/task-$task-spot-check
-#     docker run \
-#         --rm \
-#         --user "$(id -u):$(id -g)" \
-#         --cpus=4 \
-#         --memory=16g \
-#         --memory-swap=16g \
-#         --memory-swappiness 0 \
-#         --volume $(pwd)/data:/app/data:ro \
-#         --volume $(pwd)/results:/app/results:rw \
-#         sisap-own ./build/own_main.exe --inputFolder data/fiqa-dev --outputFolder results/task-3-spot-check --strategy inverted --kTop 30 --task task3 --dataset fiqa-dev
-# done

@@ -1,6 +1,29 @@
 # SISAP 2026 Challenge: Working example in Python 
 
-This repository is a working example for the SISAP 2026 Indexing Challenge <https://sisap-challenges.github.io/>, working with Python and GitHub Actions.
+This repository is a fork of the working example for the SISAP 2026 Indexing Challenge <https://sisap-challenges.github.io/>, working with Python and GitHub Actions.
+
+Here you can find the forbidden-inv, a multi-threaded C++ implementation of Inverted File Indexes (IVF) to the SISAP-2026 Task 3 Challenge.
+To run it execute:
+```bash
+chmod +x ./run_search.sh
+./run_search.sh
+```
+
+The program contains the following named arguments:
+- *--inputFolder*: the path to the directory containing an config.json and an .h5.
+- *--outputFolder*: the path to the directory where the results .h5 file will be saved.
+- *--strategy*: brute|inverted. The algorithm to employ, use inverted.
+- *--kTop*: k number of best matches.
+- *--task*: the name of the task (if inputFolder has a config.json, "task" from config will be used).
+- *--dataset*: the name of the dataset processed (if inputFolder has a config.json, "dataset_name" from config will be used).
+- *--threads*: Integer number of parallel threads to employ. -1 to use all of available.
+
+ALL PARAMETERS ARE MANDATORY. "Optional parameters" like task, dataset or threads should have a default value or a dummy one.
+
+## Dependencies
+- libhdf5-dev
+- OpenMP
+- C++17
 
 ## Installation & Setup
 
